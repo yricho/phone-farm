@@ -490,6 +490,41 @@ class CreatePostTests(unittest.TestCase):
         self.assertEqual(editor.text, "Halo halaman baru")
         self.assertEqual(editor.clicked, 1)
 
+    def test_create_post_handles_two_step_composer(self):
+        class RevealOnClick(FakeElement):
+            def __init__(self, targets, **kwargs):
+                super().__init__(**kwargs)
+                self.targets = targets
+
+            def click(self):
+                super().click()
+                for target in self.targets:
+                    target.displayed = True
+
+        editor = FakeElement(class_name="android.widget.EditText")
+        final_button = FakeElement(
+            text="Posting",
+            content_desc="Posting",
+            class_name="android.widget.Button",
+            displayed=False,
+        )
+        next_button = RevealOnClick(
+            [final_button],
+            text="Berikutnya",
+            content_desc="Berikutnya",
+            class_name="android.widget.Button",
+        )
+        feed_prompt = FakeElement(text="Apa yang Anda pikirkan?")
+        driver = FakeDriver([feed_prompt, editor, next_button, final_button])
+
+        result = create_post(driver, "Halo dua langkah")
+
+        self.assertTrue(result.posted)
+        self.assertEqual(result.button_text, "Posting")
+        self.assertEqual(next_button.clicked, 1)
+        self.assertEqual(final_button.clicked, 1)
+        self.assertEqual(editor.text, "Halo dua langkah")
+
     def test_create_post_preserves_multiline_text(self):
         elements, refs = build_composer_elements()
         driver = FakeDriver(elements)

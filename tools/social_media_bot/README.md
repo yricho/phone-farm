@@ -473,11 +473,14 @@ Alur yang dijalankan:
 2. tap composer `What's on your mind` / `Apa yang Anda pikirkan` /
    `Apa yang ada di pikiran`
 3. tunggu editor muncul (build baru membuka halaman terpisah
-   **“Buat postingan baru”**), lalu **tap field tersebut** agar fokus
+   **“Postingan baru” / “Buat postingan baru”**), lalu **tap field tersebut**
+   agar fokus
 4. ketik `post_text` di editor
 5. sembunyikan keyboard bila perlu
-6. tekan tombol `Post` / `Posting` / `Bagikan` / `Kirim` / `Share`
-   (kandidat yang `clickable="false"` dilewati)
+6. tombol final `Post` / `Posting` / `Bagikan` / `Kirim` / `Share`
+   (kandidat yang `clickable="false"` dilewati). Pada Facebook **588+** alurnya
+   dua langkah: tombol **`Berikutnya`** di layar pertama, lalu tombol
+   **`Posting`** di layar pengaturan postingan — keduanya ditangani otomatis.
 
 Nilai balik `PostResult` berisi `post_text`, `status` (`"posted"`),
 `button_text`, dan properti `posted`. Jika satu langkah gagal,

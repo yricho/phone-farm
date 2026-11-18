@@ -234,7 +234,24 @@ def create_post(
         _pause(low, high, log, "typing the post")
 
         _hide_keyboard(driver, log)
-        post_button = _wait_for_post_button(driver, timeout)
+
+        # Facebook 588+ uses a two step composer: "Postingan baru" -> Berikutnya
+        # -> audience screen -> final Posting/Post. Older builds publish straight
+        # from the composer, so check for the final button first.
+        post_button = _find_button(driver, _post_button_locators())
+        if post_button is None:
+            next_button = _wait_for_button(
+                driver,
+                _next_button_locators(),
+                min(timeout, 10.0),
+                "the Next button",
+                required=False,
+            )
+            if next_button is not None:
+                next_button.click()
+                _pause(low, high, log, "pressing Next")
+            post_button = _wait_for_post_button(driver, timeout)
+
         post_button.click()
         _pause(low, high, log, "pressing Post")
 
@@ -707,34 +724,71 @@ def _wait_for_follow_state(
         time.sleep(POLL_INTERVAL)
 
 
-def _wait_for_post_button(driver: Any, timeout: float) -> Any:
+def _matches_button(element: Any) -> bool:
+    """True when *element* is a visible, enabled, non-EditText button."""
+
+    try:
+        if not element.is_displayed():
+            return False
+        class_name = (element.get_attribute("class") or "").lower()
+        clickable = element.get_attribute("clickable")
+        enabled = element.get_attribute("enabled")
+    except Exception:
+        return False
+    # Never mistake the composer EditText for a button, even when the post text
+    # itself is "Post".
+    if "edittext" in class_name:
+        return False
+    for flag in (clickable, enabled):
+        if isinstance(flag, str) and flag.lower() == "false":
+            return False
+    return True
+
+
+def _find_button(driver: Any, locators: Sequence[Locator]) -> Any:
+    for by, value in locators:
+        try:
+            elements = driver.find_elements(by, value)
+        except Exception:
+            continue
+        for element in elements:
+            if _matches_button(element):
+                return element
+    return None
+
+
+def _wait_for_button(
+    driver: Any,
+    locators: Sequence[Locator],
+    timeout: float,
+    description: str,
+    *,
+    required: bool = True,
+) -> Any:
     deadline = time.monotonic() + timeout
     while True:
-        for by, value in _post_button_locators():
-            try:
-                elements = driver.find_elements(by, value)
-            except Exception:
-                continue
-            for element in elements:
-                try:
-                    if not element.is_displayed():
-                        continue
-                    class_name = (element.get_attribute("class") or "").lower()
-                    clickable = element.get_attribute("clickable")
-                except Exception:
-                    continue
-                # Never mistake the composer EditText for the Post button, even
-                # when the post text itself is "Post".
-                if "edittext" in class_name:
-                    continue
-                if isinstance(clickable, str) and clickable.lower() == "false":
-                    continue
-                return element
+        element = _find_button(driver, locators)
+        if element is not None:
+            return element
         if time.monotonic() >= deadline:
+            if not required:
+                return None
             raise FacebookAutomationError(
-                f"Timed out after {timeout:.0f}s waiting for the Post button"
+                f"Timed out after {timeout:.0f}s waiting for {description}"
             )
         time.sleep(POLL_INTERVAL)
+
+
+def _wait_for_post_button(
+    driver: Any, timeout: float, *, required: bool = True
+) -> Any:
+    return _wait_for_button(
+        driver,
+        _post_button_locators(),
+        timeout,
+        "the Post button",
+        required=required,
+    )
 
 
 def _submit_comment(driver: Any, logger: logging.Logger) -> str:
@@ -911,6 +965,26 @@ def _post_button_locators() -> List[Locator]:
             (
                 BY_ANDROID_UIAUTOMATOR,
                 f'new UiSelector().descriptionContains("{label}")',
+            )
+        )
+    return locators
+
+
+#: First-step labels of the two-step composer (Facebook 588+): type the text,
+#: tap Next, then tap the final Post button on the audience screen.
+_NEXT_BUTTON_LABELS = ("Berikutnya", "Next", "Lanjut", "Selanjutnya")
+
+
+def _next_button_locators() -> List[Locator]:
+    locators: List[Locator] = []
+    for label in _NEXT_BUTTON_LABELS:
+        locators.append((BY_XPATH, f'//*[@text="{label}"]'))
+        locators.append((BY_ACCESSIBILITY_ID, label))
+    for label in ("Berikutnya", "Selanjutnya"):
+        locators.append(
+            (
+                BY_ANDROID_UIAUTOMATOR,
+                f'new UiSelector().textContains("{label}")',
             )
         )
     return locators
