@@ -501,8 +501,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
     if not android.java_ok:
         print(
-            "  Driver uiautomator2 juga butuh JDK: install JDK 17+ lalu set "
-            "JAVA_HOME, kemudian restart Appium."
+            "  Driver uiautomator2 juga butuh JDK 17+ dan JAVA_HOME. Install: "
+            "winget install --id Microsoft.OpenJDK.17 -e"
         )
 
     try:

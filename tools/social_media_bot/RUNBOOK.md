@@ -25,10 +25,15 @@ harus dijalankan dari window yang environment-nya sudah benar.
    kalau memakai Android Studio, pakai `%LOCALAPPDATA%\Android\Sdk`:
 
    ```powershell
+   winget install --id Microsoft.OpenJDK.17 -e     # kalau JDK belum ada
    $sdk = "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\Google.PlatformTools_Microsoft.Winget.Source_8wekyb3d8bbwe"
+   $java = (Get-ChildItem "C:\Program Files\Microsoft" -Directory -Filter "jdk-*" |
+            Sort-Object Name -Descending | Select-Object -First 1).FullName
+   Test-Path "$sdk\platform-tools\adb.exe"         # True
+   Test-Path "$java\bin\java.exe"                  # True
    [Environment]::SetEnvironmentVariable("ANDROID_HOME", $sdk, "User")
    [Environment]::SetEnvironmentVariable("ANDROID_SDK_ROOT", $sdk, "User")
-   [Environment]::SetEnvironmentVariable("JAVA_HOME", "C:\Program Files\Microsoft\jdk-17...", "User")
+   [Environment]::SetEnvironmentVariable("JAVA_HOME", $java, "User")
    ```
 
    Setelah ini **tutup semua terminal** (atau sign out/in) agar variabel terbaca.
