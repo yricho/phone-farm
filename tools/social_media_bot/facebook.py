@@ -214,8 +214,12 @@ def create_post(
         composer.click()
         _pause(low, high, log, "opening the composer")
 
-        editor = _wait_for_any(
-            driver, _composer_editor_locators(), timeout, "the post editor"
+        editor = _wait_for_editor(
+            driver,
+            _composer_editor_locators(),
+            timeout,
+            "the post editor",
+            exclude=composer,
         )
         # Newer Facebook builds open a separate "Buat postingan baru" screen where
         # the field is not focused yet: tap it first, otherwise send_keys goes to
@@ -569,6 +573,70 @@ def _wait_for_any(
         element = _find_displayed(driver, locators)
         if element is not None:
             return element
+        if time.monotonic() >= deadline:
+            raise FacebookAutomationError(
+                f"Timed out after {timeout:.0f}s waiting for {description}"
+            )
+        time.sleep(POLL_INTERVAL)
+
+
+def _safe_attr(element: Any, name: str) -> str:
+    """Return an element attribute as text, tolerating driver errors."""
+
+    try:
+        value = element.get_attribute(name)
+    except Exception:
+        return ""
+    return value if isinstance(value, str) else ""
+
+
+def _element_signature(element: Any) -> Optional[Tuple[str, str]]:
+    """Identify an element by ``resource-id``/``bounds`` so it can be skipped.
+
+    Returns ``None`` when the driver exposes neither, in which case the element
+    cannot be told apart from others and must not be used as an exclusion key.
+    """
+
+    resource_id = _safe_attr(element, "resource-id")
+    bounds = _safe_attr(element, "bounds")
+    if not resource_id and not bounds:
+        return None
+    return (resource_id, bounds)
+
+
+def _wait_for_editor(
+    driver: Any,
+    locators: Sequence[Locator],
+    timeout: float,
+    description: str,
+    *,
+    exclude: Any = None,
+) -> Any:
+    """Wait for a text field that is *not* the composer prompt that was tapped.
+
+    On several Facebook builds the feed composer ("Apa yang Anda pikirkan?") is
+    itself an ``EditText``. Without this check the bot could type into the feed
+    instead of the "Buat postingan baru" screen and then time out waiting for
+    the Post button.
+    """
+
+    excluded = _element_signature(exclude) if exclude is not None else None
+    deadline = time.monotonic() + timeout
+    while True:
+        for by, value in locators:
+            try:
+                elements = driver.find_elements(by, value)
+            except Exception:
+                continue
+            for element in elements:
+                try:
+                    if not element.is_displayed():
+                        continue
+                except Exception:
+                    continue
+                if excluded is not None and _element_signature(element) == excluded:
+                    continue
+                return element
         if time.monotonic() >= deadline:
             raise FacebookAutomationError(
                 f"Timed out after {timeout:.0f}s waiting for {description}"

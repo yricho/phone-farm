@@ -484,9 +484,12 @@ Nilai balik `PostResult` berisi `post_text`, `status` (`"posted"`),
 `FacebookAutomationError` dilempar dengan konteks package.
 
 **Catatan:** tombol Post tidak akan tertukar dengan editor walaupun isi
-postingan persis `"Post"` (kandidat `EditText` difilter). Locator composer dan
-tombol Post ada di `_composer_prompt_locators()` / `_post_button_locators()`
-pada `facebook.py` bila perlu disesuaikan.
+postingan persis `"Post"` (kandidat `EditText` difilter). Pill composer di feed
+(“Apa yang Anda pikirkan?”) juga sering berupa `EditText`; pill tersebut
+dikecualikan berdasarkan `resource-id`/`bounds` sehingga teks tidak pernah
+diketik ke feed. Locator composer dan tombol Post ada di
+`_composer_prompt_locators()` / `_post_button_locators()` pada `facebook.py`
+bila perlu disesuaikan.
 
 Kalau versi Facebook di HP berbeda (mis. 588.x) dan langkah di atas timeout,
 dump dulu hierarki layarnya dengan `dump_ui.py` (lihat bagian **Dump UI**) lalu

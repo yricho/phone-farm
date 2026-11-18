@@ -464,6 +464,32 @@ class CreatePostTests(unittest.TestCase):
         self.assertEqual(disabled.clicked, 0)
         self.assertEqual(enabled.clicked, 1)
 
+    def test_create_post_skips_feed_composer_edittext(self):
+        # The feed pill "Apa yang Anda pikirkan?" is an EditText on many builds;
+        # it must never receive the post text.
+        feed_pill = FakeElement(
+            text="Apa yang Anda pikirkan?",
+            class_name="android.widget.EditText",
+            resource_id="com.facebook.katana:id/feed_composer",
+        )
+        editor = FakeElement(
+            class_name="android.widget.EditText",
+            resource_id="com.facebook.katana:id/composer_edit_text",
+        )
+        button = FakeElement(
+            text="Posting",
+            content_desc="Posting",
+            class_name="android.widget.Button",
+        )
+        driver = FakeDriver([feed_pill, editor, button])
+
+        result = create_post(driver, "Halo halaman baru")
+
+        self.assertTrue(result.posted)
+        self.assertEqual(feed_pill.text, "Apa yang Anda pikirkan?")
+        self.assertEqual(editor.text, "Halo halaman baru")
+        self.assertEqual(editor.clicked, 1)
+
     def test_create_post_preserves_multiline_text(self):
         elements, refs = build_composer_elements()
         driver = FakeDriver(elements)
