@@ -104,6 +104,33 @@ class CollectTests(unittest.TestCase):
         self.assertIn("probe 4724", reports[1].issues[0])
 
 
+class DependencyTests(unittest.TestCase):
+    def _status(self, appium_version, selenium_version, importable):
+        with mock.patch.object(
+            diagnose,
+            "_package_version",
+            side_effect=[appium_version, selenium_version],
+        ), mock.patch.object(
+            diagnose, "_module_importable", return_value=importable
+        ):
+            return diagnose.check_dependencies()
+
+    def test_missing_appium_is_flagged(self):
+        status = self._status(None, None, False)
+
+        self.assertFalse(status.ok)
+        self.assertIn("TIDAK TERPASANG", status.summary())
+        self.assertIn("MASALAH", status.summary())
+
+    def test_installed_appium_is_ok(self):
+        status = self._status("6.1.7", "4.53.0", True)
+
+        self.assertTrue(status.ok)
+        self.assertIn("6.1.7", status.summary())
+        self.assertIn("4.53.0", status.summary())
+        self.assertIn("OK", status.summary())
+
+
 class MainTests(unittest.TestCase):
     def test_main_reports_problems_and_exits_one(self):
         manifest = {

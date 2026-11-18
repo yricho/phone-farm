@@ -23,11 +23,14 @@ could not be read.
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import subprocess
+import sys
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
+from importlib import metadata
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence
 
@@ -64,6 +67,57 @@ class DeviceReport:
     @property
     def ok(self) -> bool:
         return not self.issues
+
+
+def _package_version(name: str) -> Optional[str]:
+    try:
+        return metadata.version(name)
+    except metadata.PackageNotFoundError:
+        return None
+
+
+def _module_importable(name: str) -> bool:
+    try:
+        importlib.import_module(name)
+    except Exception:  # noqa: BLE001 - any import failure means unusable
+        return False
+    return True
+
+
+@dataclass
+class DependencyStatus:
+    """Appium-Python-Client / selenium availability for this interpreter."""
+
+    python: str
+    executable: str
+    appium_version: Optional[str]
+    selenium_version: Optional[str]
+    importable: bool
+
+    @property
+    def ok(self) -> bool:
+        return self.importable
+
+    def summary(self) -> str:
+        appium = self.appium_version or "TIDAK TERPASANG"
+        selenium = self.selenium_version or "TIDAK TERPASANG"
+        state = "OK" if self.ok else "MASALAH"
+        return (
+            f"Python {self.python}: Appium-Python-Client {appium}, "
+            f"selenium {selenium} [{state}]"
+        )
+
+
+def check_dependencies() -> DependencyStatus:
+    """Report whether the interpreter running this script can use Appium."""
+
+    return DependencyStatus(
+        python=sys.version.split()[0],
+        executable=sys.executable,
+        appium_version=_package_version("Appium-Python-Client"),
+        selenium_version=_package_version("selenium"),
+        importable=_module_importable("appium"),
+    )
 
 
 def probe_appium(
@@ -282,6 +336,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     configure_stdio()
     args = build_parser().parse_args(argv)
 
+    deps = check_dependencies()
+    print(deps.summary())
+    if not deps.ok:
+        print(
+            "  Appium-Python-Client belum bisa di-import oleh interpreter ini. "
+            "Install dengan interpreter yang sama:"
+        )
+        print(f'    "{deps.executable}" -m pip install -r requirements.txt')
+
     try:
         rack = load_rack(args.manifest)
     except (OSError, ValueError) as exc:
@@ -309,7 +372,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         for issue in report.issues:
             print(f"      - {issue}")
 
-    exit_code = 0 if all(report.ok for report in reports) else 1
+    exit_code = 0 if deps.ok and all(report.ok for report in reports) else 1
 
     if args.live_test:
         print()

@@ -902,6 +902,11 @@ Script mencetak status tiap slot (`OK`/`MASALAH`) beserta alasannya, misalnya
 perbaikan. Exit code `0` = semua siap, `1` = ada masalah, `2` = manifest tidak
 terbaca.
 
+Baris pertama output adalah cek dependency, mis.
+`Python 3.12.4: Appium-Python-Client 6.1.7, selenium 4.53.0 [OK]`. Jika tertulis
+`TIDAK TERPASANG`/`[MASALAH]`, jalankan install memakai interpreter yang sama
+dengan yang dipakai dashboard (`sys.executable` ikut dicetak di pesan saran).
+
 - `--input adb-devices.txt` memeriksa output `adb devices -l` yang disimpan dari
   PC rack (berguna saat dashboard dijalankan di PC lain).
 - `--no-adb` melewati cek UDID.
