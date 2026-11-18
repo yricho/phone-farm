@@ -39,6 +39,7 @@ tools/social_media_bot/
 ├── dashboard.py                # server HTTP + job manager dashboard
 ├── dashboard_ui/               # index.html, styles.css, app.js
 ├── diagnose.py                 # cek manifest -> adb -> Appium per port
+├── start-appium.bat            # Windows: satu window Appium per port
 ├── run_rack.py                 # CLI: connect 1 rak dari manifest JSON
 ├── RACK_SETUP.md               # panduan fisik → ADB → Appium → dashboard
 ├── MVP_PRIORITIES.md           # prioritas P0/P1/P2 dan checklist rilis
@@ -121,8 +122,15 @@ appium -p 4724   # HP slot 02
 # ... sampai -p 4742 untuk 20 HP
 ```
 
-Di Windows, buka terminal baru untuk setiap port, atau jalankan background jobs
-PowerShell:
+Di Windows, buka terminal baru untuk setiap port, atau pakai helper (satu window
+`cmd` per port, aman terhadap execution policy PowerShell):
+
+```bat
+start-appium.bat                          :: 4723 4724 4725
+start-appium.bat 4723 4724 4725 4726      :: daftar port sendiri
+```
+
+Alternatif PowerShell (background jobs):
 
 ```powershell
 1..20 | ForEach-Object {
@@ -131,6 +139,9 @@ PowerShell:
 }
 Get-Job
 ```
+
+Jika muncul `appium.ps1 cannot be loaded because running scripts is disabled`,
+lihat **Troubleshooting Windows** di bagian bawah.
 
 Pastikan `adb devices` menampilkan semua HP (contoh: 20) dengan status `device`
 sebelum menjalankan bot. Di Windows, tambahkan folder **Android platform-tools**
@@ -965,6 +976,14 @@ manifest dari output adb, serta round-trip capability lewat
   `PATH`, lalu buka terminal baru.
 - **`appium` tidak dikenali** — install Node.js LTS, jalankan
   `npm install -g appium`, lalu buka terminal baru.
+- **`appium.ps1 cannot be loaded because running scripts is disabled`** —
+  kebijakan eksekusi PowerShell memblokir shim npm, bukan masalah instalasi.
+  Pilih salah satu:
+  - jalankan `start-appium.bat` (satu window cmd per port, policy tidak dipakai);
+  - per sesi: `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass`;
+  - permanen untuk user: `Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned`;
+  - tanpa mengubah policy: `appium.cmd -p 4723`, `cmd /c appium -p 4723`, atau
+    `cmd /c appium driver install uiautomator2`.
 - **Port Appium sudah dipakai** — cek dengan
   `netstat -ano | findstr :4723`; hentikan proses lama atau ganti port di
   manifest.
