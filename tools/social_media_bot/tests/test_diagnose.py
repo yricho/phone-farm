@@ -131,6 +131,31 @@ class DependencyTests(unittest.TestCase):
         self.assertIn("OK", status.summary())
 
 
+class AndroidEnvTests(unittest.TestCase):
+    def _env(self, environ, which):
+        with mock.patch.dict(diagnose.os.environ, environ, clear=True), mock.patch.object(
+            diagnose.shutil, "which", return_value=which
+        ):
+            return diagnose.check_android_env()
+
+    def test_missing_variables_is_flagged(self):
+        status = self._env({}, None)
+
+        self.assertFalse(status.ok)
+        self.assertIn("MASALAH", status.summary())
+        self.assertIn("tidak ditemukan", status.summary())
+
+    def test_android_home_is_enough(self):
+        status = self._env(
+            {"ANDROID_HOME": "C:/Android/Sdk"},
+            "C:/Android/Sdk/platform-tools/adb.exe",
+        )
+
+        self.assertTrue(status.ok)
+        self.assertIn("C:/Android/Sdk", status.summary())
+        self.assertIn("adb.exe", status.summary())
+
+
 class ErrorHintTests(unittest.TestCase):
     def test_connection_refused_hint(self):
         hint = diagnose.explain_error(
@@ -152,6 +177,14 @@ class ErrorHintTests(unittest.TestCase):
         hint = diagnose.explain_error("Unable to connect to adb. Check if adb is installed")
         self.assertIsNotNone(hint)
         self.assertIn("platform-tools", hint)
+
+    def test_android_home_hint(self):
+        hint = diagnose.explain_error(
+            "Message: Neither ANDROID_HOME nor ANDROID_SDK_ROOT environment "
+            "variable was exported."
+        )
+        self.assertIsNotNone(hint)
+        self.assertIn("ANDROID_HOME", hint)
 
     def test_unrecognised_error_has_no_hint(self):
         self.assertIsNone(diagnose.explain_error("something unexpected"))

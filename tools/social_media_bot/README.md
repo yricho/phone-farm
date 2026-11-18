@@ -918,6 +918,13 @@ Baris pertama output adalah cek dependency, mis.
 `TIDAK TERPASANG`/`[MASALAH]`, jalankan install memakai interpreter yang sama
 dengan yang dipakai dashboard (`sys.executable` ikut dicetak di pesan saran).
 
+Baris kedua memeriksa environment Android yang dibutuhkan driver
+`uiautomator2`, mis. `ANDROID_HOME C:\Users\Andi\AppData\Local\Android\Sdk ·
+ANDROID_SDK_ROOT ... · adb ... [OK]`. Bila `[MASALAH]`, Appium akan menolak
+membuat session dengan pesan *Neither ANDROID_HOME nor ANDROID_SDK_ROOT …
+was exported* — set variabel tersebut ke folder SDK (bukan folder
+`platform-tools`), lalu restart Appium.
+
 - `--input adb-devices.txt` memeriksa output `adb devices -l` yang disimpan dari
   PC rack (berguna saat dashboard dijalankan di PC lain).
 - `--no-adb` melewati cek UDID.

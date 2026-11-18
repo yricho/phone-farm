@@ -25,6 +25,8 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
+import os
+import shutil
 import subprocess
 import sys
 import urllib.error
@@ -117,6 +119,39 @@ def check_dependencies() -> DependencyStatus:
         appium_version=_package_version("Appium-Python-Client"),
         selenium_version=_package_version("selenium"),
         importable=_module_importable("appium"),
+    )
+
+
+@dataclass
+class AndroidEnv:
+    """``ANDROID_HOME``/``ANDROID_SDK_ROOT`` as seen by the Appium server."""
+
+    android_home: Optional[str]
+    android_sdk_root: Optional[str]
+    adb_path: Optional[str]
+
+    @property
+    def ok(self) -> bool:
+        return bool(self.android_home or self.android_sdk_root)
+
+    def summary(self) -> str:
+        home = self.android_home or "-"
+        root = self.android_sdk_root or "-"
+        adb = self.adb_path or "tidak ditemukan"
+        state = "OK" if self.ok else "MASALAH"
+        return (
+            f"ANDROID_HOME {home} · ANDROID_SDK_ROOT {root} · adb {adb} "
+            f"[{state}]"
+        )
+
+
+def check_android_env() -> AndroidEnv:
+    """Inspect the Android SDK variables the uiautomator2 driver requires."""
+
+    return AndroidEnv(
+        android_home=os.environ.get("ANDROID_HOME") or None,
+        android_sdk_root=os.environ.get("ANDROID_SDK_ROOT") or None,
+        adb_path=shutil.which("adb"),
     )
 
 
@@ -240,6 +275,12 @@ def _short(message: str, limit: int = LIVE_ERROR_LIMIT) -> str:
 
 #: ``(substring of the Appium error, explanation)`` used by ``--live-test``.
 ERROR_HINTS: Sequence[Tuple[str, str]] = (
+    (
+        "neither android_home nor android_sdk_root",
+        "Appium tidak punya ANDROID_HOME/ANDROID_SDK_ROOT. Set keduanya ke "
+        "folder SDK Android (bukan folder platform-tools), lalu tutup dan buka "
+        "ulang window Appium.",
+    ),
     (
         "connection refused",
         "Appium tidak berjalan di port itu. Jalankan `appium -p <port>` lalu cek "
@@ -385,9 +426,16 @@ def _load_adb_serials(args: argparse.Namespace) -> Optional[List[str]]:
 
 
 def _print_hints(
-    reports: Sequence[DeviceReport], adb_serials: Optional[Sequence[str]]
+    reports: Sequence[DeviceReport],
+    adb_serials: Optional[Sequence[str]],
+    android: Optional[AndroidEnv] = None,
 ) -> None:
     hints: List[str] = []
+    if android is not None and not android.ok:
+        hints.append(
+            "ANDROID_HOME/ANDROID_SDK_ROOT kosong: driver uiautomator2 menolak "
+            "membuat session. Set ke folder SDK Android, lalu restart Appium."
+        )
     broken = [report for report in reports if not report.ok]
     if broken and all(
         any("Appium" in issue for issue in report.issues) for report in broken
@@ -422,6 +470,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
         print(f'    "{deps.executable}" -m pip install -r requirements.txt')
 
+    android = check_android_env()
+    print(android.summary())
+    if not android.ok:
+        print(
+            "  Appium butuh ANDROID_HOME/ANDROID_SDK_ROOT. Set ke folder SDK "
+            "Android (contoh: %LOCALAPPDATA%\\Android\\Sdk), lalu tutup dan "
+            "buka ulang window Appium."
+        )
+
     try:
         rack = load_rack(args.manifest)
     except (OSError, ValueError) as exc:
@@ -451,24 +508,29 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     exit_code = 0 if deps.ok and all(report.ok for report in reports) else 1
 
+    live_errors: Optional[Dict[str, str]] = None
     if args.live_test:
         print()
         print("Tes session Appium sebenarnya:")
-        errors = live_test(rack, host, scheme=args.scheme)
-        for udid, error in errors.items():
+        live_errors = live_test(rack, host, scheme=args.scheme)
+        for udid, error in live_errors.items():
             print(f"  {udid:<22} " + ("OK" if not error else "GAGAL"))
             if error:
                 print(f"      - {_short(error)}")
                 hint = explain_error(error)
                 if hint:
                     print(f"      → {hint}")
-        if any(errors.values()):
+        if any(live_errors.values()):
             exit_code = 1
 
     print()
     ready = sum(1 for report in reports if report.ok)
-    print(f"Siap: {ready}/{len(reports)} device")
-    _print_hints(reports, adb_serials)
+    suffix = ""
+    if live_errors is not None:
+        ready = sum(1 for error in live_errors.values() if not error)
+        suffix = " (live test)"
+    print(f"Siap: {ready}/{len(reports)} device{suffix}")
+    _print_hints(reports, adb_serials, android)
     return exit_code
 
 

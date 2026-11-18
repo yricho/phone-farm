@@ -385,9 +385,19 @@ appium driver list --installed
 appium driver doctor uiautomator2
 ```
 
-4. Pastikan environment Android terbaca oleh Appium:
+4. Pastikan environment Android terbaca oleh Appium (driver `uiautomator2`
+   menolak membuat session dengan pesan *Neither ANDROID_HOME nor
+   ANDROID_SDK_ROOT …* bila variabel ini kosong):
    - Windows: `ANDROID_HOME` / `ANDROID_SDK_ROOT` mengarah ke Android SDK,
      `platform-tools` ada di `PATH`.
+
+     ```powershell
+     $sdk = "$env:LOCALAPPDATA\Android\Sdk"     # sesuaikan lokasi SDK Anda
+     [Environment]::SetEnvironmentVariable("ANDROID_HOME", $sdk, "User")
+     [Environment]::SetEnvironmentVariable("ANDROID_SDK_ROOT", $sdk, "User")
+     Test-Path "$sdk\platform-tools\adb.exe"    # harus True
+     ```
+     Tutup dan buka ulang window Appium setelah mengubah variabel.
    - macOS/Linux: SDK dari Android Studio atau platform-tools sudah di `PATH`.
 
 > Appium server perlu melihat `adb`. Jika `adb devices` berjalan di terminal
