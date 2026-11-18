@@ -82,6 +82,7 @@ class FakeBot:
         self.connect_calls = []
         self.run_calls = []
         self.disconnect_calls = 0
+        self.last_connect_failures = {}
         self.driver_factory = driver_factory or (lambda udid: object())
         if rack is not None:
             self.connect_devices(rack)
@@ -97,8 +98,10 @@ class FakeBot:
     def connect_devices(self, rack, *, continue_on_error=False, max_workers=None):
         self.connect_calls.append(rack)
         connected = {}
+        self.last_connect_failures = {}
         for spec in rack.devices:
             if spec.udid == "broken":
+                self.last_connect_failures[spec.udid] = "session boom"
                 continue
             self._connections[spec.udid] = SimpleNamespace(
                 session_id=f"session-{spec.udid}",
@@ -193,6 +196,24 @@ class DashboardStateTests(unittest.TestCase):
         self.assertEqual(done["result"]["failed"], [])
         self.assertEqual(len(self.bot.connect_calls), 1)
         self.assertEqual(self.state.status()["summary"]["connected"], 4)
+
+    def test_connect_job_reports_failure_reasons(self):
+        rack = Rack(
+            name="rack-test",
+            host="10.0.0.5",
+            devices=[DeviceSpec("broken", 4725, {"device_name": "slot-x"})],
+        )
+        state = dashboard.DashboardState(
+            self.bot, rack, max_workers=2, actions=fake_actions()
+        )
+        self.addCleanup(state.shutdown)
+
+        job = state.submit_connect()
+        done = wait_job(state, job["id"])
+
+        self.assertEqual(done["result"]["failed"], ["broken"])
+        self.assertEqual(done["result"]["errors"], {"broken": "session boom"})
+        self.assertIn("broken (session boom)", done["message"])
 
     def test_connect_job_can_target_a_subset(self):
         job = self.state.submit_connect(["d1", "d3"])

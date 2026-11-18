@@ -204,6 +204,22 @@ class SocialMediaBotTests(unittest.TestCase):
         self.assertEqual(list(connected), ["d1"])
         self.assertEqual(self.bot.device_ids, ("d1",))
 
+    def test_connect_devices_records_failure_reasons(self):
+        def flaky(_bot, server_url, capabilities):
+            if server_url.endswith(":4724"):
+                raise DeviceConnectionError("session boom")
+            return self._fake_create(server_url, capabilities)
+
+        with mock.patch.object(SocialMediaBot, "_create_driver", new=flaky):
+            with self.assertLogs(smb.__name__, level="ERROR"):
+                self.bot.connect_devices(
+                    {"d1": 4723, "d2": 4724}, continue_on_error=True
+                )
+
+        self.assertEqual(
+            self.bot.last_connect_failures, {"d2": "session boom"}
+        )
+
     def test_connect_devices_parallel_handles_a_20_phone_rack(self):
         active = 0
         max_active = 0

@@ -236,6 +236,9 @@ class SocialMediaBot:
         self._new_command_timeout = int(new_command_timeout)
         self._max_workers = max_workers
         self._logger = logger or logging.getLogger(__name__)
+        # udid -> str(error) from the most recent connect_devices() call, so
+        # callers (dashboard, CLI, diagnose.py) can explain *why* a phone failed.
+        self._last_connect_failures: Dict[str, str] = {}
 
         # udid -> DeviceConnection, guarded by _lock. Drivers live here so the
         # bot can reuse them across calls and shut them down in disconnect_all.
@@ -270,6 +273,16 @@ class SocialMediaBot:
         """Snapshot of the live drivers (``udid -> Appium driver``)."""
         with self._lock:
             return {udid: conn.driver for udid, conn in self._devices.items()}
+
+    @property
+    def last_connect_failures(self) -> Dict[str, str]:
+        """Error message per UDID from the most recent ``connect_devices`` call.
+
+        Empty when every requested device connected. Kept as strings so the
+        dashboard can show the reason without importing Appium exceptions.
+        """
+        with self._lock:
+            return dict(self._last_connect_failures)
 
     def is_connected(self, udid: str) -> bool:
         """Return ``True`` when *udid* has an active session."""
@@ -418,19 +431,23 @@ class SocialMediaBot:
 
         if workers == 1:
             connected: Dict[str, Driver] = {}
+            failures: Dict[str, Exception] = {}
             for udid, appium_port, options in items:
                 try:
                     connected[udid] = self.connect_device(
                         udid, appium_port, **{**connect_kwargs, **options}
                     )
                 except DeviceConnectionError as exc:
+                    failures[udid] = exc
                     if not continue_on_error:
+                        self._remember_connect_failures(failures)
                         raise
                     self._logger.error(
                         "Skipping device %s after a connection failure: %s",
                         udid,
                         exc,
                     )
+            self._remember_connect_failures(failures)
             return connected
 
         drivers: Dict[str, Driver] = {}
@@ -468,6 +485,8 @@ class SocialMediaBot:
             for udid, connection in self._devices.items():
                 reordered.setdefault(udid, connection)
             self._devices = reordered
+
+        self._remember_connect_failures(failures)
 
         for udid in sorted(failures, key=order.__getitem__):
             error = failures[udid]
@@ -712,6 +731,13 @@ class SocialMediaBot:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+    def _remember_connect_failures(self, failures: Mapping[str, Exception]) -> None:
+        """Store the latest per-device connect errors for callers and the UI."""
+        with self._lock:
+            self._last_connect_failures = {
+                udid: str(error) for udid, error in failures.items()
+            }
+
     def _open_session(
         self,
         udid: str,

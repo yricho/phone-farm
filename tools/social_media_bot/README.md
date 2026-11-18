@@ -38,6 +38,7 @@ tools/social_media_bot/
 ├── console.py                  # helper encoding console (Windows-safe)
 ├── dashboard.py                # server HTTP + job manager dashboard
 ├── dashboard_ui/               # index.html, styles.css, app.js
+├── diagnose.py                 # cek manifest -> adb -> Appium per port
 ├── run_rack.py                 # CLI: connect 1 rak dari manifest JSON
 ├── RACK_SETUP.md               # panduan fisik → ADB → Appium → dashboard
 ├── MVP_PRIORITIES.md           # prioritas P0/P1/P2 dan checklist rilis
@@ -882,6 +883,35 @@ Session dibuat dengan API modern `UiAutomator2Options` +
 - Satu instance `SocialMediaBot` per rak/proses. Untuk beberapa rak, buat
   instance terpisah per host Appium.
 - Patuhi ketentuan layanan platform media sosial yang Anda otomatiskan.
+
+## Diagnosa koneksi (`diagnose.py`)
+
+Kalau `Connect all` menghasilkan `0/3 device(s) connected`, jalankan diagnosa
+untuk melihat penyebabnya per HP (manifest → adb → Appium per port):
+
+```bash
+cd tools/social_media_bot
+python3 diagnose.py --manifest rack-01.json
+python3 diagnose.py --manifest rack-01.json --live-test   # coba session Appium sungguhan
+python3 diagnose.py --manifest rack-01.json --no-adb --appium-host 192.168.1.20
+```
+
+Script mencetak status tiap slot (`OK`/`MASALAH`) beserta alasannya, misalnya
+`tidak ada Appium di http://127.0.0.1:4724/status (Connection refused)` atau
+`UDID 'R58M00000001' tidak ada di adb devices`, lalu menutup dengan saran
+perbaikan. Exit code `0` = semua siap, `1` = ada masalah, `2` = manifest tidak
+terbaca.
+
+- `--input adb-devices.txt` memeriksa output `adb devices -l` yang disimpan dari
+  PC rack (berguna saat dashboard dijalankan di PC lain).
+- `--no-adb` melewati cek UDID.
+- `--live-test` benar-benar membuat session Appium per HP dan mencetak error
+  aslinya, sama seperti yang dilakukan dashboard.
+
+Pesan job connect di dashboard kini juga menyertakan alasan per device, contoh
+`0/3 device(s) connected; failed: R58M0001 (Could not create an Appium session
+at http://127.0.0.1:4723: ...)`, dan `result.errors` memuat pesan lengkapnya
+lewat `GET /api/jobs/<id>`.
 
 ## Menjalankan test
 

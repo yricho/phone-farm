@@ -86,6 +86,21 @@ MAX_RACK_DEVICES = 64
 MAX_SCHEDULE_AHEAD = 365 * 24 * 60 * 60
 AUTH_COOKIE = "gads_auth"
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+#: Longest per-device error shown inside a connect job message.
+CONNECT_ERROR_LIMIT = 180
+
+
+def _short_error(message: Optional[str], limit: int = CONNECT_ERROR_LIMIT) -> str:
+    """Collapse a multi-line Appium error into one short line for job messages."""
+
+    if not message:
+        return "unknown error"
+    text = " ".join(str(message).split())
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
 LOGIN_PAGE = """<!doctype html>
 <html lang="id">
 <head>
@@ -1235,10 +1250,23 @@ class DashboardState:
         )
         connected = self.bot.connect_devices(subset, continue_on_error=True)
         failed = [spec.udid for spec in selected if spec.udid not in connected]
+        reasons = dict(getattr(self.bot, "last_connect_failures", None) or {})
         message = f"{len(connected)}/{len(selected)} device(s) connected"
         if failed:
-            message += "; failed: " + ", ".join(failed)
-        return {"connected": list(connected), "failed": failed}, message
+            message += "; failed: " + ", ".join(
+                (
+                    f"{udid} ({_short_error(reasons.get(udid))})"
+                    if reasons.get(udid)
+                    else udid
+                )
+                for udid in failed
+            )
+        result: Dict[str, Any] = {"connected": list(connected), "failed": failed}
+        if reasons:
+            result["errors"] = {
+                udid: reasons[udid] for udid in failed if udid in reasons
+            }
+        return result, message
 
     def _do_disconnect(self) -> Any:
         self.screen_streams.close_all()
