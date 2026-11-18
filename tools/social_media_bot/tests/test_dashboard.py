@@ -214,6 +214,7 @@ class DashboardStateTests(unittest.TestCase):
         self.assertEqual(done["result"]["failed"], ["broken"])
         self.assertEqual(done["result"]["errors"], {"broken": "session boom"})
         self.assertIn("broken (session boom)", done["message"])
+        self.assertEqual(done["status"], "failed")
 
     def test_connect_job_can_target_a_subset(self):
         job = self.state.submit_connect(["d1", "d3"])

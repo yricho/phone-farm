@@ -1228,13 +1228,23 @@ class DashboardState:
             self._persist_state()
             return
 
+        status = "succeeded"
+        if job_type == "connect" and isinstance(result, dict):
+            failed_devices = result.get("failed") or []
+            if failed_devices and not result.get("connected"):
+                # Nothing came up: report the job as failed instead of
+                # "succeeded" with a 0/N message, so the badge is not misleading.
+                status = "failed"
+
         with self._lock:
             job = self._jobs.get(job_id)
             if job is not None:
-                job["status"] = "succeeded"
+                job["status"] = status
                 job["result"] = result
                 job["message"] = message
                 job["finished_at"] = time.time()
+                if status == "failed":
+                    job["error"] = message
         self._persist_state()
         logging.getLogger(LOGGER_NAME).info("%s: %s", job_id, message)
 
