@@ -10,6 +10,9 @@ objek berdasarkan UDID.
 > **Baru pertama kali?** Ikuti panduan lengkap dari perakitan rack, setting
 > Android, ADB, Appium per port, sampai dashboard:
 > **[RACK_SETUP.md](RACK_SETUP.md)**.
+>
+> **Urutan menjalankan harian (Windows):** **[RUNBOOK.md](RUNBOOK.md)** —
+> env → Appium → verifikasi → dashboard → Connect all.
 
 > **Status MVP dan urutan pekerjaan:** lihat
 > **[MVP_PRIORITIES.md](MVP_PRIORITIES.md)**.
@@ -43,6 +46,7 @@ tools/social_media_bot/
 ├── start-dashboard.bat         # Windows: jalankan dashboard (pakai .venv)
 ├── run_rack.py                 # CLI: connect 1 rak dari manifest JSON
 ├── RACK_SETUP.md               # panduan fisik → ADB → Appium → dashboard
+├── RUNBOOK.md                  # urutan singkat menjalankan farm harian
 ├── MVP_PRIORITIES.md           # prioritas P0/P1/P2 dan checklist rilis
 ├── MVP_ACCEPTANCE.md           # checklist acceptance device nyata
 ├── rack-01.example.json        # contoh manifest 20 HP (port 4723-4742)
