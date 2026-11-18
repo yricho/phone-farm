@@ -20,3 +20,13 @@ design_handoff_gads_modernisation/*
 docs/docs.go
 docs/swagger.json
 docs/swagger.yaml
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.state.json
+
+# Windows
+Thumbs.db
+Desktop.ini

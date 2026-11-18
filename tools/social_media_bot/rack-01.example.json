@@ -1,0 +1,106 @@
+{
+  "rack": "my rack",
+  "host": "192.168.1.20",
+  "devices": [
+    {
+      "udid": "R58M00000001",
+      "appium_port": 4723,
+      "device_name": "slot-01"
+    },
+    {
+      "udid": "R58M00000002",
+      "appium_port": 4724,
+      "device_name": "slot-02"
+    },
+    {
+      "udid": "R58M00000003",
+      "appium_port": 4725,
+      "device_name": "slot-03"
+    },
+    {
+      "udid": "R58M00000004",
+      "appium_port": 4726,
+      "device_name": "slot-04"
+    },
+    {
+      "udid": "R58M00000005",
+      "appium_port": 4727,
+      "device_name": "slot-05"
+    },
+    {
+      "udid": "R58M00000006",
+      "appium_port": 4728,
+      "device_name": "slot-06"
+    },
+    {
+      "udid": "R58M00000007",
+      "appium_port": 4729,
+      "device_name": "slot-07"
+    },
+    {
+      "udid": "R58M00000008",
+      "appium_port": 4730,
+      "device_name": "slot-08"
+    },
+    {
+      "udid": "R58M00000009",
+      "appium_port": 4731,
+      "device_name": "slot-09"
+    },
+    {
+      "udid": "R58M00000010",
+      "appium_port": 4732,
+      "device_name": "slot-10"
+    },
+    {
+      "udid": "R58M00000011",
+      "appium_port": 4733,
+      "device_name": "slot-11"
+    },
+    {
+      "udid": "R58M00000012",
+      "appium_port": 4734,
+      "device_name": "slot-12"
+    },
+    {
+      "udid": "R58M00000013",
+      "appium_port": 4735,
+      "device_name": "slot-13"
+    },
+    {
+      "udid": "R58M00000014",
+      "appium_port": 4736,
+      "device_name": "slot-14"
+    },
+    {
+      "udid": "R58M00000015",
+      "appium_port": 4737,
+      "device_name": "slot-15"
+    },
+    {
+      "udid": "R58M00000016",
+      "appium_port": 4738,
+      "device_name": "slot-16"
+    },
+    {
+      "udid": "R58M00000017",
+      "appium_port": 4739,
+      "device_name": "slot-17"
+    },
+    {
+      "udid": "R58M00000018",
+      "appium_port": 4740,
+      "device_name": "slot-18"
+    },
+    {
+      "udid": "R58M00000019",
+      "appium_port": 4741,
+      "device_name": "slot-19"
+    },
+    {
+      "udid": "R58M00000020",
+      "appium_port": 4742,
+      "device_name": "slot-20"
+    }
+  ]
+}
