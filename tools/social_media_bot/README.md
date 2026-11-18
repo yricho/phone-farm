@@ -472,9 +472,12 @@ Alur yang dijalankan:
 1. `activate_app` + tunggu app foreground
 2. tap composer `What's on your mind` / `Apa yang Anda pikirkan` /
    `Apa yang ada di pikiran`
-3. ketik `post_text` di editor
-4. sembunyikan keyboard bila perlu
-5. tekan tombol `Post`/`Posting`
+3. tunggu editor muncul (build baru membuka halaman terpisah
+   **“Buat postingan baru”**), lalu **tap field tersebut** agar fokus
+4. ketik `post_text` di editor
+5. sembunyikan keyboard bila perlu
+6. tekan tombol `Post` / `Posting` / `Bagikan` / `Kirim` / `Share`
+   (kandidat yang `clickable="false"` dilewati)
 
 Nilai balik `PostResult` berisi `post_text`, `status` (`"posted"`),
 `button_text`, dan properti `posted`. Jika satu langkah gagal,
@@ -484,6 +487,10 @@ Nilai balik `PostResult` berisi `post_text`, `status` (`"posted"`),
 postingan persis `"Post"` (kandidat `EditText` difilter). Locator composer dan
 tombol Post ada di `_composer_prompt_locators()` / `_post_button_locators()`
 pada `facebook.py` bila perlu disesuaikan.
+
+Kalau versi Facebook di HP berbeda (mis. 588.x) dan langkah di atas timeout,
+dump dulu hierarki layarnya dengan `dump_ui.py` (lihat bagian **Dump UI**) lalu
+sesuaikan locator berdasarkan `class`/`text`/`content-desc` yang muncul.
 
 ## Komentari postingan Facebook
 

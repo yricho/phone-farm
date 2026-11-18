@@ -405,6 +405,65 @@ class CreatePostTests(unittest.TestCase):
         self.assertEqual(result.button_text, "Posting")
         self.assertEqual(refs["button"].clicked, 1)
 
+    def test_create_post_taps_the_editor_before_typing(self):
+        elements, refs = build_composer_elements()
+        driver = FakeDriver(elements)
+
+        create_post(driver, "Halo")
+
+        self.assertEqual(refs["editor"].clicked, 1)
+
+    def test_create_post_handles_separate_composer_page(self):
+        class RevealPage(FakeElement):
+            def __init__(self, targets, **kwargs):
+                super().__init__(**kwargs)
+                self.targets = targets
+
+            def click(self):
+                super().click()
+                for target in self.targets:
+                    target.displayed = True
+
+        editor = FakeElement(class_name="android.widget.EditText", displayed=False)
+        button = FakeElement(
+            text="Bagikan",
+            content_desc="Bagikan",
+            class_name="android.widget.Button",
+            displayed=False,
+        )
+        composer = RevealPage([editor, button], text="Apa yang Anda pikirkan?")
+        driver = FakeDriver([composer, editor, button])
+
+        result = create_post(driver, "Halo halaman baru")
+
+        self.assertTrue(result.posted)
+        self.assertEqual(result.button_text, "Bagikan")
+        self.assertEqual(editor.text, "Halo halaman baru")
+        self.assertEqual(button.clicked, 1)
+
+    def test_create_post_ignores_disabled_post_button(self):
+        class Disabled(FakeElement):
+            def get_attribute(self, name):
+                if name == "clickable":
+                    return "false"
+                return super().get_attribute(name)
+
+        prompt = FakeElement(text="What's on your mind, Tester?")
+        editor = FakeElement(class_name="android.widget.EditText")
+        disabled = Disabled(
+            text="Post", content_desc="Post", class_name="android.widget.Button"
+        )
+        enabled = FakeElement(
+            text="Bagikan", content_desc="Bagikan", class_name="android.widget.Button"
+        )
+        driver = FakeDriver([prompt, editor, disabled, enabled])
+
+        result = create_post(driver, "Halo")
+
+        self.assertEqual(result.button_text, "Bagikan")
+        self.assertEqual(disabled.clicked, 0)
+        self.assertEqual(enabled.clicked, 1)
+
     def test_create_post_preserves_multiline_text(self):
         elements, refs = build_composer_elements()
         driver = FakeDriver(elements)
@@ -423,7 +482,10 @@ class CreatePostTests(unittest.TestCase):
         self.assertTrue(result.posted)
         self.assertEqual(refs["editor"].text, "Post")
         self.assertEqual(refs["button"].clicked, 1)
-        self.assertEqual(refs["editor"].clicked, 0)
+        # The editor is tapped once to focus it; it must never be the element
+        # that submits the post (the Button is).
+        self.assertEqual(refs["editor"].clicked, 1)
+        self.assertEqual(result.button_text, "Post")
 
     def test_create_post_raises_when_composer_is_missing(self):
         elements, _refs = build_composer_elements(with_prompt=False)

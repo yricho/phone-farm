@@ -217,6 +217,14 @@ def create_post(
         editor = _wait_for_any(
             driver, _composer_editor_locators(), timeout, "the post editor"
         )
+        # Newer Facebook builds open a separate "Buat postingan baru" screen where
+        # the field is not focused yet: tap it first, otherwise send_keys goes to
+        # the page instead of the text field.
+        try:
+            editor.click()
+        except Exception:  # noqa: BLE001 - field may already be focused
+            log.debug("Facebook: could not tap the editor; typing into the focus")
+        _pause(low, high, log, "focusing the post editor")
         _clear(editor, log)
         editor.send_keys(text)
         _pause(low, high, log, "typing the post")
@@ -644,11 +652,14 @@ def _wait_for_post_button(driver: Any, timeout: float) -> Any:
                     if not element.is_displayed():
                         continue
                     class_name = (element.get_attribute("class") or "").lower()
+                    clickable = element.get_attribute("clickable")
                 except Exception:
                     continue
                 # Never mistake the composer EditText for the Post button, even
                 # when the post text itself is "Post".
                 if "edittext" in class_name:
+                    continue
+                if isinstance(clickable, str) and clickable.lower() == "false":
                     continue
                 return element
         if time.monotonic() >= deadline:
@@ -794,15 +805,47 @@ def _composer_editor_locators() -> List[Locator]:
     return [
         (BY_CLASS_NAME, "android.widget.EditText"),
         (BY_XPATH, "//android.widget.EditText"),
+        # Newer composers may expose the field as a view whose text/content-desc
+        # is the placeholder, so try those as last-resort fallbacks.
+        (
+            BY_ANDROID_UIAUTOMATOR,
+            'new UiSelector().textContains("Apa yang Anda pikirkan")',
+        ),
+        (
+            BY_ANDROID_UIAUTOMATOR,
+            'new UiSelector().descriptionContains("Apa yang Anda pikirkan")',
+        ),
+        (
+            BY_ANDROID_UIAUTOMATOR,
+            'new UiSelector().textContains("What\'s on your mind")',
+        ),
     ]
+
+
+#: Labels used by the final submit button across Facebook builds/locales.
+_POST_BUTTON_LABELS = ("Post", "Posting", "Bagikan", "Kirim", "Share")
 
 
 def _post_button_locators() -> List[Locator]:
-    return [
-        (BY_XPATH, '//*[@text="Post" or @text="Posting"]'),
-        (BY_ACCESSIBILITY_ID, "Post"),
-        (BY_ACCESSIBILITY_ID, "Posting"),
-    ]
+    locators: List[Locator] = []
+    for label in _POST_BUTTON_LABELS:
+        locators.append((BY_XPATH, f'//*[@text="{label}"]'))
+        locators.append((BY_ACCESSIBILITY_ID, label))
+    # Wrapped labels such as "Bagikan sekarang" / "Posting sebagai …".
+    for label in ("Bagikan", "Kirim", "Share"):
+        locators.append(
+            (
+                BY_ANDROID_UIAUTOMATOR,
+                f'new UiSelector().textContains("{label}")',
+            )
+        )
+        locators.append(
+            (
+                BY_ANDROID_UIAUTOMATOR,
+                f'new UiSelector().descriptionContains("{label}")',
+            )
+        )
+    return locators
 
 
 def _comment_button_locators() -> List[Locator]:
