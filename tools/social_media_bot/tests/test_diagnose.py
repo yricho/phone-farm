@@ -131,6 +131,34 @@ class DependencyTests(unittest.TestCase):
         self.assertIn("OK", status.summary())
 
 
+class ErrorHintTests(unittest.TestCase):
+    def test_connection_refused_hint(self):
+        hint = diagnose.explain_error(
+            "Could not create an Appium session at http://127.0.0.1:4723: "
+            "[Errno 61] Connection refused"
+        )
+        self.assertIsNotNone(hint)
+        self.assertIn("appium -p", hint)
+
+    def test_unknown_udid_hint(self):
+        hint = diagnose.explain_error(
+            "Original error: Unable to find an active device or emulator with "
+            "udid 'R58M00000001'"
+        )
+        self.assertIsNotNone(hint)
+        self.assertIn("UDID", hint)
+
+    def test_adb_hint(self):
+        hint = diagnose.explain_error("Unable to connect to adb. Check if adb is installed")
+        self.assertIsNotNone(hint)
+        self.assertIn("platform-tools", hint)
+
+    def test_unrecognised_error_has_no_hint(self):
+        self.assertIsNone(diagnose.explain_error("something unexpected"))
+        self.assertIsNone(diagnose.explain_error(""))
+        self.assertIsNone(diagnose.explain_error(None))
+
+
 class MainTests(unittest.TestCase):
     def test_main_reports_problems_and_exits_one(self):
         manifest = {

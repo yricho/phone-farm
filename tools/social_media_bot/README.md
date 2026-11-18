@@ -911,7 +911,9 @@ dengan yang dipakai dashboard (`sys.executable` ikut dicetak di pesan saran).
   PC rack (berguna saat dashboard dijalankan di PC lain).
 - `--no-adb` melewati cek UDID.
 - `--live-test` benar-benar membuat session Appium per HP dan mencetak error
-  aslinya, sama seperti yang dilakukan dashboard.
+  aslinya, sama seperti yang dilakukan dashboard. Error umum (Appium belum
+  jalan, UDID salah, adb tidak ditemukan, driver uiautomator2 gagal) otomatis
+  diberi saran perbaikan.
 
 Pesan job connect di dashboard kini juga menyertakan alasan per device, contoh
 `0/3 device(s) connected; failed: R58M0001 (Could not create an Appium session

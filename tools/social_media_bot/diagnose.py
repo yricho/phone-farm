@@ -32,7 +32,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from importlib import metadata
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Sequence
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 try:  # Support both package and direct-script execution.
     from .console import configure_stdio
@@ -238,6 +238,83 @@ def _short(message: str, limit: int = LIVE_ERROR_LIMIT) -> str:
     return text[: limit - 1].rstrip() + "…"
 
 
+#: ``(substring of the Appium error, explanation)`` used by ``--live-test``.
+ERROR_HINTS: Sequence[Tuple[str, str]] = (
+    (
+        "connection refused",
+        "Appium tidak berjalan di port itu. Jalankan `appium -p <port>` lalu cek "
+        "`curl http://<host>:<port>/status`.",
+    ),
+    (
+        "failed to establish a new connection",
+        "Appium tidak berjalan di port itu, atau host/port di manifest salah.",
+    ),
+    (
+        "max retries exceeded",
+        "Appium tidak bisa dihubungi: cek host/port manifest dan pastikan server "
+        "`appium -p <port>` hidup.",
+    ),
+    (
+        "could not find a connected android device",
+        "UDID tidak dikenal adb di mesin Appium. Cek `adb devices -l` di mesin itu, "
+        "lalu buat ulang manifest: `python generate_rack.py --output "
+        "<manifest> --force`.",
+    ),
+    (
+        "unable to find an active device or emulator with udid",
+        "UDID di manifest tidak ada di mesin Appium: salah ketik, HP tersambung "
+        "ke PC lain, atau masih UDID contoh.",
+    ),
+    (
+        "unauthorized",
+        "HP belum mengizinkan USB debugging: terima dialog Allow USB debugging, "
+        "lalu jalankan ulang `adb devices`.",
+    ),
+    (
+        "unable to connect to adb",
+        "Appium tidak menemukan adb: tambahkan Android platform-tools ke PATH, "
+        "lalu restart Appium.",
+    ),
+    (
+        "instrumentation process cannot be initialized",
+        "Driver uiautomator2 gagal start: `appium driver install uiautomator2`, "
+        "buka kunci layar HP, lalu cabut-pasang kabel USB.",
+    ),
+    (
+        "requested a new session but one was in progress",
+        "Masih ada session lama di port itu: restart Appium atau putuskan "
+        "session sebelumnya.",
+    ),
+    (
+        "could not proxy command",
+        "Appium crash/hang saat membuat session: lihat log Appium di terminal, "
+        "biasanya HP terputus atau driver bermasalah.",
+    ),
+    (
+        "timed out",
+        "Appium/HP tidak merespons tepat waktu: HP hang, kabel lemah, atau "
+        "server terlalu sibuk.",
+    ),
+    (
+        "install_failed",
+        "Instalasi APK gagal di HP: cek ruang penyimpanan dan dialog izin "
+        "pemasangan aplikasi.",
+    ),
+)
+
+
+def explain_error(message: Optional[str]) -> Optional[str]:
+    """Map a raw Appium error to an actionable Indonesian hint."""
+
+    if not message:
+        return None
+    lowered = str(message).lower()
+    for needle, hint in ERROR_HINTS:
+        if needle in lowered:
+            return hint
+    return None
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Diagnose why a rack manifest cannot connect over Appium."
@@ -382,6 +459,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print(f"  {udid:<22} " + ("OK" if not error else "GAGAL"))
             if error:
                 print(f"      - {_short(error)}")
+                hint = explain_error(error)
+                if hint:
+                    print(f"      → {hint}")
         if any(errors.values()):
             exit_code = 1
 
