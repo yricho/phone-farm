@@ -155,6 +155,24 @@ class AndroidEnvTests(unittest.TestCase):
         self.assertIn("C:/Android/Sdk", status.summary())
         self.assertIn("adb.exe", status.summary())
 
+    def test_missing_java_is_flagged(self):
+        status = self._env({"ANDROID_HOME": "C:/Android/Sdk"}, None)
+
+        self.assertTrue(status.ok)
+        self.assertFalse(status.java_ok)
+        self.assertIn("JAVA_HOME -", status.java_summary())
+        self.assertIn("MASALAH", status.java_summary())
+
+    def test_java_home_is_enough(self):
+        status = self._env(
+            {"JAVA_HOME": "C:/Program Files/Java/jdk-17"},
+            "C:/Program Files/Java/jdk-17/bin/java.exe",
+        )
+
+        self.assertTrue(status.java_ok)
+        self.assertIn("jdk-17", status.java_summary())
+        self.assertIn("OK", status.java_summary())
+
 
 class ErrorHintTests(unittest.TestCase):
     def test_connection_refused_hint(self):

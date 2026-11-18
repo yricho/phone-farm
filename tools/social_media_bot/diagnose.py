@@ -129,10 +129,16 @@ class AndroidEnv:
     android_home: Optional[str]
     android_sdk_root: Optional[str]
     adb_path: Optional[str]
+    java_home: Optional[str] = None
+    java_path: Optional[str] = None
 
     @property
     def ok(self) -> bool:
         return bool(self.android_home or self.android_sdk_root)
+
+    @property
+    def java_ok(self) -> bool:
+        return bool(self.java_home or self.java_path)
 
     def summary(self) -> str:
         home = self.android_home or "-"
@@ -144,14 +150,22 @@ class AndroidEnv:
             f"[{state}]"
         )
 
+    def java_summary(self) -> str:
+        home = self.java_home or "-"
+        java = self.java_path or "tidak ditemukan"
+        state = "OK" if self.java_ok else "MASALAH"
+        return f"JAVA_HOME {home} · java {java} [{state}]"
+
 
 def check_android_env() -> AndroidEnv:
-    """Inspect the Android SDK variables the uiautomator2 driver requires."""
+    """Inspect the Android SDK/Java variables the uiautomator2 driver requires."""
 
     return AndroidEnv(
         android_home=os.environ.get("ANDROID_HOME") or None,
         android_sdk_root=os.environ.get("ANDROID_SDK_ROOT") or None,
         adb_path=shutil.which("adb"),
+        java_home=os.environ.get("JAVA_HOME") or None,
+        java_path=shutil.which("java"),
     )
 
 
@@ -434,7 +448,13 @@ def _print_hints(
     if android is not None and not android.ok:
         hints.append(
             "ANDROID_HOME/ANDROID_SDK_ROOT kosong: driver uiautomator2 menolak "
-            "membuat session. Set ke folder SDK Android, lalu restart Appium."
+            "membuat session. Arahkan ke folder yang berisi platform-tools, "
+            "lalu restart Appium."
+        )
+    if android is not None and not android.java_ok:
+        hints.append(
+            "JAVA_HOME/java tidak ditemukan: install JDK 17+, set JAVA_HOME, "
+            "lalu restart Appium."
         )
     broken = [report for report in reports if not report.ok]
     if broken and all(
@@ -472,11 +492,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     android = check_android_env()
     print(android.summary())
+    print(android.java_summary())
     if not android.ok:
         print(
-            "  Appium butuh ANDROID_HOME/ANDROID_SDK_ROOT. Set ke folder SDK "
-            "Android (contoh: %LOCALAPPDATA%\\Android\\Sdk), lalu tutup dan "
+            "  Appium butuh ANDROID_HOME/ANDROID_SDK_ROOT. Arahkan ke folder yang "
+            "berisi platform-tools (contoh: C:\\Android\\sdk), lalu tutup dan "
             "buka ulang window Appium."
+        )
+    if not android.java_ok:
+        print(
+            "  Driver uiautomator2 juga butuh JDK: install JDK 17+ lalu set "
+            "JAVA_HOME, kemudian restart Appium."
         )
 
     try:

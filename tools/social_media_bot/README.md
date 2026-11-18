@@ -981,6 +981,16 @@ manifest dari output adb, serta round-trip capability lewat
   `.venv\Scripts\activate.bat` dari Command Prompt.
 - **`adb` tidak dikenali** — tambahkan folder Android `platform-tools` ke
   `PATH`, lalu buka terminal baru.
+- **`Neither ANDROID_HOME nor ANDROID_SDK_ROOT … was exported`** — `adb` di
+  `PATH` saja tidak cukup. Set `ANDROID_HOME` **dan** `ANDROID_SDK_ROOT` ke
+  folder yang berisi `platform-tools`:
+  - Android Studio: `%LOCALAPPDATA%\Android\Sdk`
+  - platform-tools dari winget: folder induknya, mis.
+    `%LOCALAPPDATA%\Microsoft\WinGet\Packages\Google.PlatformTools_Microsoft.Winget.Source_8wekyb3d8bbwe`
+
+  Driver `uiautomator2` juga butuh JDK 17+: set `JAVA_HOME` ke folder JDK
+  (mis. `C:\Program Files\Microsoft\jdk-17...`). Tutup dan buka ulang window
+  Appium setelah mengubah variabel; cek hasilnya dengan `diagnose.py`.
 - **`appium` tidak dikenali** — install Node.js LTS, jalankan
   `npm install -g appium`, lalu buka terminal baru.
 - **`appium.ps1 cannot be loaded because running scripts is disabled`** —
