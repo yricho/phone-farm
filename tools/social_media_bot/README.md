@@ -42,6 +42,7 @@ tools/social_media_bot/
 ├── dashboard.py                # server HTTP + job manager dashboard
 ├── dashboard_ui/               # index.html, styles.css, app.js
 ├── diagnose.py                 # cek manifest -> adb -> Appium per port
+├── dump_ui.py                  # dump page source Appium (cari locator UI)
 ├── start-appium.bat            # Windows: satu window Appium per port
 ├── start-dashboard.bat         # Windows: jalankan dashboard (pakai .venv)
 ├── run_rack.py                 # CLI: connect 1 rak dari manifest JSON
@@ -946,6 +947,21 @@ Pesan job connect di dashboard kini juga menyertakan alasan per device, contoh
 `0/3 device(s) connected; failed: R58M0001 (Could not create an Appium session
 at http://127.0.0.1:4723: ...)`, dan `result.errors` memuat pesan lengkapnya
 lewat `GET /api/jobs/<id>`.
+
+## Dump UI (`dump_ui.py`)
+
+Kalau tampilan aplikasi berubah (mis. halaman **Buat postingan baru** di
+Facebook) dan aksi gagal karena elemen tidak ditemukan, buka layar tersebut di
+HP lalu dump hierarkinya:
+
+```bash
+python3 dump_ui.py --manifest rack-01.json --slot slot-01
+python3 dump_ui.py --manifest rack-01.json --udid R58M00000001 --out fb-post.xml
+```
+
+Output mencantumkan `class`, `text`, `content-desc`, `resource-id`, dan `bounds`
+untuk setiap elemen berlabel, sehingga locator di `platforms/*.py` bisa
+disesuaikan. File XML penuh (`--out`) bisa dikirim untuk analisis.
 
 ## Menjalankan test
 
