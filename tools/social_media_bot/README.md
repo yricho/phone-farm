@@ -40,6 +40,7 @@ tools/social_media_bot/
 ├── dashboard_ui/               # index.html, styles.css, app.js
 ├── diagnose.py                 # cek manifest -> adb -> Appium per port
 ├── start-appium.bat            # Windows: satu window Appium per port
+├── start-dashboard.bat         # Windows: jalankan dashboard (pakai .venv)
 ├── run_rack.py                 # CLI: connect 1 rak dari manifest JSON
 ├── RACK_SETUP.md               # panduan fisik → ADB → Appium → dashboard
 ├── MVP_PRIORITIES.md           # prioritas P0/P1/P2 dan checklist rilis
@@ -575,6 +576,10 @@ Windows (PowerShell atau cmd):
 cd tools\social_media_bot
 python dashboard.py
 ```
+
+Atau langsung `start-dashboard.bat` — script memilih `.venv\Scripts\python.exe`
+bila ada, memberi catatan bila `rack-01.json` belum ada (dashboard masuk mode
+setup), dan meneruskan argumen tambahan (mis. `start-dashboard.bat --workers 4`).
 
 Jika ingin memakai nama manifest lain:
 
