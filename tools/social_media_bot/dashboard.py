@@ -112,6 +112,8 @@ ADB_MAX_FAILURES = 3
 
 #: Android keycode for the hardware mute toggle (fallback for remote devices).
 KEYCODE_VOLUME_MUTE = 164
+#: KEYCODE_HOME returns to the launcher after the platform apps are closed.
+KEYCODE_HOME = 3
 #: AudioManager stream id used for media playback.
 AUDIO_STREAM_MUSIC = 3
 #: ``volume is 7 in range [0..15]`` as printed by the adb volume helpers.
@@ -253,6 +255,52 @@ def set_media_muted(
         raise RuntimeError("driver does not support key presses")
     press(KEYCODE_VOLUME_MUTE)
     return {"method": "appium", "keycode": KEYCODE_VOLUME_MUTE}
+
+
+def close_apps(driver: Any, packages: Sequence[str]) -> Dict[str, Any]:
+    """Terminate *packages* on one device and report what happened.
+
+    Uses the Appium ``terminateApp`` command (UiAutomator2 runs
+    ``am force-stop`` under the hood) so it also works for remote GADS devices.
+    Apps that are not installed or were not running are reported as skipped
+    instead of failing the whole job, and the phone is left on its home screen.
+    """
+
+    closed: List[str] = []
+    skipped: List[str] = []
+    failed: Dict[str, str] = {}
+
+    terminate = getattr(driver, "terminate_app", None)
+    execute = getattr(driver, "execute_script", None)
+    for package in packages:
+        try:
+            if callable(terminate):
+                result = terminate(package)
+            elif callable(execute):
+                result = execute("mobile: terminateApp", {"appId": package})
+            else:
+                raise RuntimeError("driver does not support terminating apps")
+        except Exception as exc:
+            message = " ".join(str(exc).split())
+            lowered = message.lower()
+            if "not installed" in lowered or "unknown package" in lowered:
+                skipped.append(package)
+            else:
+                failed[package] = message[:CONNECT_ERROR_LIMIT] or "terminate failed"
+            continue
+        if result is False:
+            skipped.append(package)
+        else:
+            closed.append(package)
+
+    home = getattr(driver, "press_keycode", None)
+    if callable(home):
+        try:
+            home(KEYCODE_HOME)
+        except Exception:
+            pass
+
+    return {"closed": closed, "skipped": skipped, "failed": failed}
 
 
 class AdbFrameGrabber:
@@ -1096,6 +1144,46 @@ class DashboardState:
         """Queue a disconnect-all job."""
         return self._submit("disconnect", {}, "Disconnect all devices")
 
+    def submit_close_apps(
+        self,
+        target: str = "all",
+        platforms: Optional[Iterable[str]] = None,
+    ) -> Dict[str, Any]:
+        """Queue a job that closes the platform apps on the devices."""
+
+        if target != "all":
+            known = {spec.udid for spec in self.rack.devices}
+            if target not in known:
+                raise ValueError(f"unknown target device {target!r}")
+
+        requested = [str(key) for key in (platforms or self._platforms)]
+        default_packages = {
+            adapter.info.key: adapter.info.package
+            for adapter in default_platforms().values()
+        }
+        packages: List[str] = []
+        for key in requested:
+            adapter = self._platforms.get(key)
+            if adapter is None:
+                raise ValueError(f"unknown platform {key!r}")
+            package = adapter.info.package
+            if "." not in package:
+                # Legacy/test adapters only carry a placeholder package name.
+                package = default_packages.get(key, "")
+            if package and package not in packages:
+                packages.append(package)
+        if not packages:
+            raise ValueError("no packages to close")
+
+        label = "Close apps · " + (
+            "all connected devices" if target == "all" else target
+        )
+        return self._submit(
+            "close_apps",
+            {"target": target, "packages": packages},
+            label,
+        )
+
     def submit_health(
         self,
         target: str = "all",
@@ -1506,6 +1594,8 @@ class DashboardState:
                 result, message = self._do_connect(payload)
             elif job_type == "disconnect":
                 result, message = self._do_disconnect()
+            elif job_type == "close_apps":
+                result, message = self._do_close_apps(payload)
             elif job_type == "action":
                 result, message = self._do_action(payload)
             elif job_type == "bulk":
@@ -1593,6 +1683,37 @@ class DashboardState:
         self.screen_streams.close_all()
         closed = self.bot.disconnect_all()
         return {"closed": closed}, f"{closed} session(s) closed"
+
+    def _do_close_apps(self, payload: Dict[str, Any]) -> Any:
+        target = payload.get("target", "all")
+        packages = list(payload.get("packages") or [])
+        if not packages:
+            raise ValueError("no packages to close")
+
+        udids = list(self.bot.device_ids) if target == "all" else [target]
+        if not udids:
+            raise RuntimeError("No connected devices. Run Connect all first.")
+
+        results: Dict[str, Dict[str, Any]] = {}
+        ok = failed = 0
+        for udid in udids:
+            try:
+                outcome = close_apps(self.bot.get_driver(udid), packages)
+            except Exception as exc:
+                results[udid] = {"ok": False, "error": str(exc)}
+                failed += 1
+                continue
+            device_ok = not outcome["failed"]
+            results[udid] = {"ok": device_ok, **outcome}
+            if device_ok:
+                ok += 1
+            else:
+                failed += 1
+
+        return (
+            {"ok": ok, "failed": failed, "devices": results},
+            f"Close apps: {ok} ok, {failed} failed",
+        )
 
     def _do_health(self, payload: Dict[str, Any]) -> Any:
         target = payload.get("target", "all")
@@ -2608,6 +2729,11 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 job = self.server.state.submit_connect(udids)
             elif parsed.path == "/api/disconnect":
                 job = self.server.state.submit_disconnect()
+            elif parsed.path == "/api/apps/close":
+                job = self.server.state.submit_close_apps(
+                    target=payload.get("target", "all"),
+                    platforms=payload.get("platforms"),
+                )
             elif parsed.path == "/api/action":
                 job = self.server.state.submit_action(
                     action=payload.get("action", ""),

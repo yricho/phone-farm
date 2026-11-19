@@ -113,6 +113,12 @@
       <path d="M3 9v6h4l5 5V4L7 9H3Z"></path>
       <path d="m16 9 5 6M21 9l-5 6"></path>
     </symbol>
+    <symbol id="icon-apps" viewBox="0 0 24 24">
+      <rect x="3.5" y="3.5" width="7" height="7" rx="1.5"></rect>
+      <rect x="13.5" y="3.5" width="7" height="7" rx="1.5"></rect>
+      <rect x="3.5" y="13.5" width="7" height="7" rx="1.5"></rect>
+      <rect x="13.5" y="13.5" width="7" height="7" rx="1.5"></rect>
+    </symbol>
   </svg>
 
   <header class="topbar">
@@ -144,6 +150,11 @@
       <button id="btn-disconnect" class="btn btn-danger" type="button">
         <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-power"></use></svg>
         <span>Disconnect all</span>
+      </button>
+      <button id="btn-close-apps" class="btn btn-ghost" type="button"
+              title="Tutup Facebook/Instagram/Threads/X/TikTok di semua HP yang terhubung">
+        <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-apps"></use></svg>
+        <span>Close apps</span>
       </button>
       <button id="btn-theme" class="btn btn-ghost theme-toggle" type="button"
               title="Aktifkan mode terang" aria-label="Mode terang" aria-pressed="false">
@@ -262,6 +273,12 @@
                       title="Mute / unmute suara HP">
                 <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-volume"></use></svg>
                 <span>Mute</span>
+              </button>
+              <button id="screen-close-apps" class="btn btn-ghost btn-small"
+                      type="button" disabled
+                      title="Tutup aplikasi platform di HP ini">
+                <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-apps"></use></svg>
+                <span>Close apps</span>
               </button>
             </div>
             <div class="screen-text-row">

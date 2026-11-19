@@ -164,6 +164,7 @@
     automationHint: $("automation-hint"),
     screenBack: $("screen-back"),
     screenMute: $("screen-mute"),
+    screenCloseApps: $("screen-close-apps"),
     screenHome: $("screen-home"),
     screenEnter: $("screen-enter"),
     screenText: $("screen-text"),
@@ -1148,6 +1149,28 @@
     }
   }
 
+  function renderCloseAppsButton(device) {
+    els.screenCloseApps.disabled = !device || !device.connected;
+  }
+
+  async function closeApps(target) {
+    const label = target === "all" ? "semua HP" : target;
+    try {
+      const job = await api("/api/apps/close", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target }),
+      });
+      toast(`Job ${job.id}: ${job.label}`, "ok");
+      if (target === state.liveUdid) {
+        els.screenInputStatus.textContent = `Menutup aplikasi di ${label}…`;
+      }
+      await refreshStatus();
+    } catch (error) {
+      toast(`Gagal menutup aplikasi: ${error.message}`, "bad");
+    }
+  }
+
   function fillLiveMeta(device) {
     if (!device) {
       els.panelSlot.textContent = "—";
@@ -1171,6 +1194,7 @@
     els.liveSubtitle.textContent = `${device.udid} · port ${device.appium_port}`;
     fillLiveMeta(device);
     renderMuteButton(device);
+    renderCloseAppsButton(device);
     markLiveCard(udid);
     els.screenText.value = "";
     els.screenInputStatus.textContent = device.connected
@@ -1193,6 +1217,7 @@
     els.liveSubtitle.textContent = `${device.udid} · port ${device.appium_port}`;
     fillLiveMeta(device);
     renderMuteButton(device);
+    renderCloseAppsButton(device);
     if (!device.connected) {
       stopLiveStream();
       els.liveEmpty.hidden = false;
@@ -1236,6 +1261,7 @@
     els.liveSubtitle.textContent = "Pilih device dari daftar di bawah";
     fillLiveMeta(null);
     renderMuteButton(null);
+    renderCloseAppsButton(null);
     setLiveStatus("—", "muted");
     els.liveRetry.disabled = true;
     els.liveEmpty.hidden = false;
@@ -1541,6 +1567,10 @@
   els.screenHome.addEventListener("click", () => sendScreenKey("home"));
   els.screenEnter.addEventListener("click", () => sendScreenKey("enter"));
   els.screenMute.addEventListener("click", toggleLiveMute);
+  els.screenCloseApps.addEventListener("click", () => {
+    if (state.liveUdid) closeApps(state.liveUdid);
+  });
+  $("btn-close-apps").addEventListener("click", () => closeApps("all"));
   els.screenSendText.addEventListener("click", sendScreenText);
   els.screenText.addEventListener("keydown", (event) => {
     if (event.key === "Enter") {

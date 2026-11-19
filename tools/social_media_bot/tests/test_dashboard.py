@@ -21,6 +21,7 @@ from urllib.parse import urlencode
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import dashboard  # noqa: E402
+from platforms import default_platforms  # noqa: E402
 from rack import DeviceSpec, Rack, load_rack  # noqa: E402
 from social_media_bot import DeviceNotConnectedError, DeviceTaskResult  # noqa: E402
 
@@ -223,6 +224,74 @@ class DashboardStateTests(unittest.TestCase):
                     reloaded.shutdown()
             finally:
                 state.shutdown()
+
+    def test_close_apps_job_terminates_platform_packages(self):
+        driver = FakeScreenDriver()
+        bot = FakeBot(rack=self.rack, driver_factory=lambda udid: driver)
+        state = dashboard.DashboardState(
+            bot,
+            self.rack,
+            platforms=default_platforms(),
+            max_workers=2,
+        )
+        self.addCleanup(state.shutdown)
+
+        job = state.submit_close_apps()
+        done = wait_job(state, job["id"])
+
+        self.assertEqual(done["status"], "succeeded")
+        self.assertEqual(done["result"]["ok"], 4)
+        device = done["result"]["devices"]["d0"]
+        self.assertTrue(device["ok"])
+        self.assertIn("com.facebook.katana", device["closed"])
+        self.assertIn("com.instagram.android", device["closed"])
+        self.assertIn("com.zhiliaoapp.musically", device["closed"])
+        self.assertIn(
+            ("mobile: terminateApp", {"appId": "com.facebook.katana"}),
+            driver.scripts,
+        )
+        self.assertEqual(driver.keys[-1], dashboard.KEYCODE_HOME)
+
+        single = state.submit_close_apps(target="d1")
+        single_done = wait_job(state, single["id"])
+        self.assertEqual(single_done["status"], "succeeded")
+        self.assertEqual(list(single_done["result"]["devices"]), ["d1"])
+
+        for kwargs in ({"target": "nope"}, {"platforms": ["nope"]}):
+            with self.subTest(kwargs=kwargs):
+                with self.assertRaises(ValueError):
+                    state.submit_close_apps(**kwargs)
+
+    def test_close_apps_skips_missing_packages(self):
+        class MissingDriver(FakeScreenDriver):
+            def execute_script(self, script, args=None):
+                super().execute_script(script, args)
+                if (
+                    script == "mobile: terminateApp"
+                    and (args or {}).get("appId") == "com.instagram.barcelona"
+                ):
+                    raise RuntimeError("App is not installed")
+                return True
+
+        outcome = dashboard.close_apps(
+            MissingDriver(),
+            ["com.facebook.katana", "com.instagram.barcelona"],
+        )
+
+        self.assertEqual(outcome["closed"], ["com.facebook.katana"])
+        self.assertEqual(outcome["skipped"], ["com.instagram.barcelona"])
+        self.assertEqual(outcome["failed"], {})
+
+    def test_close_apps_reports_driver_errors(self):
+        class BrokenDriver(FakeScreenDriver):
+            def execute_script(self, script, args=None):
+                raise RuntimeError("driver is gone")
+
+        outcome = dashboard.close_apps(BrokenDriver(), ["com.facebook.katana"])
+
+        self.assertEqual(outcome["closed"], [])
+        self.assertIn("com.facebook.katana", outcome["failed"])
+        self.assertIn("driver is gone", outcome["failed"]["com.facebook.katana"])
 
     def test_connect_job_connects_the_rack(self):
         job = self.state.submit_connect()
@@ -1212,6 +1281,9 @@ class DashboardHttpTests(unittest.TestCase):
         self.assertIn('value="actual"', body)
         self.assertIn('id="screen-mute"', body)
         self.assertIn('icon-volume-off', body)
+        self.assertIn('id="btn-close-apps"', body)
+        self.assertIn('id="screen-close-apps"', body)
+        self.assertIn('icon-apps', body)
         self.assertIn('id="setup-scan"', body)
         self.assertIn('id="setup-save"', body)
         self.assertIn('id="setup-devices"', body)
@@ -1247,6 +1319,8 @@ class DashboardHttpTests(unittest.TestCase):
         self.assertIn("applyScreenSize", script)
         self.assertIn("toggleLiveMute", script)
         self.assertIn("/audio", script)
+        self.assertIn("closeApps", script)
+        self.assertIn("/api/apps/close", script)
         self.assertIn("scanSetup", script)
         self.assertIn("renderCampaignPlatforms", script)
         self.assertIn("maybeNotify", script)
@@ -1508,6 +1582,35 @@ class DashboardHttpTests(unittest.TestCase):
 
         self.assertEqual(status, 502)
         self.assertIn("audio control failed", body["error"])
+
+    def test_close_apps_endpoint_runs_a_job(self):
+        self.bot.connect_devices(self.rack)
+
+        status, job = self.request_json(
+            "/api/apps/close", "POST", {"target": "all"}
+        )
+
+        self.assertEqual(status, 202)
+        done = wait_job(self.state, job["id"])
+        self.assertEqual(done["status"], "succeeded")
+        self.assertEqual(done["result"]["ok"], 2)
+        self.assertIn(
+            ("mobile: terminateApp", {"appId": "com.facebook.katana"}),
+            self.screen_driver.scripts,
+        )
+        self.assertEqual(self.screen_driver.keys[-1], dashboard.KEYCODE_HOME)
+
+        status, body = self.request_json(
+            "/api/apps/close", "POST", {"target": "nope"}
+        )
+        self.assertEqual(status, 400)
+        self.assertIn("unknown target", body["error"])
+
+        status, body = self.request_json(
+            "/api/apps/close", "POST", {"platforms": ["nope"]}
+        )
+        self.assertEqual(status, 400)
+        self.assertIn("unknown platform", body["error"])
 
     def test_connect_endpoint_runs_a_job(self):
         status, job = self.request_json("/api/connect", "POST", {})

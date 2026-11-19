@@ -695,9 +695,12 @@ Fitur:
 - pilihan ukuran live screen: **Fit / Kecil / Sedang / Besar / 1:1 asli** —
   rasio device selalu terjaga, mode **1:1** menampilkan resolusi asli dan bisa
   discroll; resolusi screenshot ditampilkan di header;
-- panel live **interaktif** (tap, swipe, ketik, Back/Home/Enter, dan
-  **Mute/Unmute** suara HP);
+- panel live **interaktif** (tap, swipe, ketik, Back/Home/Enter, **Mute/Unmute**
+  suara HP, dan **Close apps** untuk HP yang sedang live);
 - tombol **Connect all** / **Disconnect all**;
+- tombol **Close apps** di topbar: menutup Facebook/Instagram/Threads/X/TikTok
+  di semua HP terhubung lalu kembali ke home screen (lihat bagian
+  **Close apps**);
 - **mode gelap/terang** lewat tombol matahari/bulan di topbar; pilihan disimpan
   di browser dan default mengikuti `prefers-color-scheme` sistem;
 - **layout dua kolom**: live screen di kiri dan panel **Control** di kanan berisi
@@ -779,6 +782,27 @@ Respons berisi `ok`, `muted`, plus `method` (`adb`/`appium`) dan `volume` bila
 tersedia. Device offline → `409`; body tidak valid → `400`; gagal di
 driver/adb → `502`.
 
+### Close apps
+
+Tombol **Close apps** di topbar (semua HP terhubung) dan di panel live (satu HP)
+menutup aplikasi platform lewat Appium `terminateApp` (UiAutomator2 memakai
+`am force-stop`), lalu menekan **Home**. Cocok untuk mereset HP sebelum run
+berikutnya atau saat sebuah slot tertahan di layar aplikasi.
+
+- paket yang ditutup: `com.facebook.katana`, `com.instagram.android`,
+  `com.instagram.barcelona`, `com.twitter.android`, `com.zhiliaoapp.musically`
+  (bisa dibatasi per platform lewat `platforms`);
+- aplikasi yang tidak terpasang / tidak sedang berjalan dilaporkan sebagai
+  `skipped`, bukan membuat job gagal;
+- berjalan sebagai **job** (202 + `job.id`) dengan hasil per device:
+  `closed`, `skipped`, `failed`.
+
+```http
+POST /api/apps/close
+{"target": "all"}          # atau {"target": "<udid>"}
+{"platforms": ["facebook", "instagram"]}   # opsional
+```
+
 Aksi tidak dieksekusi di request HTTP. Semua masuk **antrean job** dan diproses
 satu per satu oleh worker background, sehingga:
 
@@ -801,6 +825,7 @@ API yang dipakai UI:
 | `GET` | `/api/devices/<udid>/screenshot` | Satu snapshot PNG (debug/fallback) |
 | `POST` | `/api/devices/<udid>/input` | Tap/swipe/teks/key interaktif dengan koordinat fraksi 0–1 |
 | `POST` | `/api/devices/<udid>/audio` | `{"muted": true\|false}` — mute/unmute suara media HP untuk live session |
+| `POST` | `/api/apps/close` | `{"target": "all"\|"<udid>", "platforms": ["facebook", ...]}` — tutup aplikasi platform (job) |
 | `POST` | `/api/connect` | Body `{}` atau `{"udids": [...]}`; antrekan connect |
 | `POST` | `/api/disconnect` | Antrekan disconnect all |
 | `POST` | `/api/action` | `{"platform": "...", "action": "follow\|post\|comment\|like\|save\|reply", "target": "all\|<udid>", "params": {...}, "schedule_at": "ISO-8601 optional"}` |
@@ -1136,7 +1161,7 @@ retry setelah tombol Post, konteks device di pesan error), alur
 fallback IME/Enter, URL gagal dibuka, foreground gagal, validasi, delay acak),
 registry & capability 5 platform (Instagram, Threads, X, TikTok), flow
 follow/post/comment/like/save/reply lintas platform, penolakan post media-only,
-dashboard (job connect/disconnect/action, bulk campaign follow/comment +
+dashboard (job connect/disconnect/close apps/action, bulk campaign follow/comment +
 progress, retry item gagal, cancel, platform dispatch, **scheduler persisten,
 campaign lintas platform, daily limit, analytics, health check**, status/log
 API, static assets, validasi request, log capture, live stream MJPEG, snapshot
