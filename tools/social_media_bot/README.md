@@ -476,9 +476,11 @@ Alur yang dijalankan:
 2. cari pill composer `What's on your mind` / `Apa yang Anda pikirkan` /
    `Bagikan sesuatu` / `Tulis sesuatu` / `Buat postingan` / `Create post`.
    Kalau layar composer dari percobaan sebelumnya masih terbuka, field-nya
-   langsung dipakai; kalau pill tidak terlihat, bot membuka **`fb://feed`**,
-   menutup popup “Nanti”/“Not now”, lalu scroll feed ke atas sebelum menyerah —
-   jadi layar sisa run sebelumnya tidak langsung jadi timeout 20 detik.
+   langsung dipakai. Kalau pill tidak terlihat (feed sering mengingat posisi
+   scroll), bot **tap tab Home** di navigasi bawah (Facebook otomatis scroll ke
+   paling atas) lalu swipe beberapa kali; kalau masih tidak ada, bot membuka
+   **`fb://feed`**, menutup popup “Nanti”/“Not now”, dan scroll lagi sebelum
+   menyerah — jadi layar sisa run sebelumnya tidak langsung jadi timeout.
 3. tunggu editor muncul (build baru membuka halaman terpisah
    **“Postingan baru” / “Buat postingan baru”**), lalu **tap field tersebut**
    agar fokus. Kalau editor belum muncul, composer di-tap ulang dan field yang
@@ -1161,7 +1163,8 @@ multiline, tombol Post hilang, validasi teks, delay acak, bounds pill/editor
 identik, layar composer sudah terbuka, tap composer diulang, label tombol
 terbungkus + tap koordinat, editor berbasis `View`, auto UI dump saat gagal,
 reuse layar composer sisa run, deep link `fb://feed` saat pill hilang, scroll
-feed ke atas, dismiss popup, wake screen, retry sekali sebelum submit, tidak
+feed ke atas lewat tab Home + swipe, dismiss popup, wake screen, retry sekali
+sebelum submit, tidak
 retry setelah tombol Post, konteks device di pesan error, tap `Selesai`/`Done`
 di layar teks), alur
 `comment_on_post` (deep link, kotak komentar tersembunyi, label Indonesia,

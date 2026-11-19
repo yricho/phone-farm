@@ -885,6 +885,43 @@ class CreatePostTests(unittest.TestCase):
         )
         self.assertEqual(editor.text, "Halo feed")
 
+    def test_create_post_taps_the_home_tab_to_reach_the_composer(self):
+        prompt = FakeElement(
+            text="Apa yang Anda pikirkan?",
+            displayed=False,
+            element_id="prompt-node",
+        )
+        editor = FakeElement(
+            class_name="android.widget.EditText", element_id="editor-node"
+        )
+        button = FakeElement(
+            text="Posting",
+            content_desc="Posting",
+            class_name="android.widget.Button",
+            element_id="post-button",
+        )
+
+        class HomeTab(FakeElement):
+            def click(self):
+                super().click()
+                prompt.displayed = True
+
+        home = HomeTab(
+            content_desc="Home, tab, 1 of 5",
+            class_name="android.view.ViewGroup",
+            element_id="home-tab",
+        )
+        home.location = {"x": 90, "y": 2200}
+        home.size = {"width": 140, "height": 140}
+        driver = FakeDriver([home, prompt, editor, button])
+
+        with mock.patch.object(facebook, "COMPOSER_FIRST_WAIT", 0.02):
+            result = create_post(driver, "Halo home", timeout=0.5)
+
+        self.assertTrue(result.posted)
+        self.assertEqual(home.clicked, 1)
+        self.assertEqual(editor.text, "Halo home")
+
     def test_create_post_scrolls_the_feed_when_the_composer_is_off_screen(self):
         prompt = FakeElement(
             text="What's on your mind, Tester?",

@@ -987,53 +987,49 @@ def _open_post_composer_entry(
 ) -> Any:
     """Return the element that opens the post composer.
 
-    Facebook can be left on the composer/audience screen by a previous run, its
-    feed can be scrolled away, or a popup can cover the composer. When the entry
-    is not visible the flow returns to the feed, dismisses common popups and
-    scrolls up before giving up, so a stale screen does not turn into an
-    immediate timeout.
+    Facebook remembers the feed scroll position, can be left on the
+    composer/audience screen by a previous run, or show a popup. When the entry
+    is not visible the flow scrolls the feed to the very top first (the bottom
+    Home tab scrolls the feed up), then returns to the feed with a deep link,
+    dismisses common popups and scrolls again before giving up.
     """
 
-    deadline = time.monotonic() + timeout
     composer = _wait_for_composer_entry(
-        driver, deadline, min(COMPOSER_FIRST_WAIT, timeout)
+        driver, min(COMPOSER_FIRST_WAIT, timeout)
     )
     if composer is not None:
         return composer
 
-    if time.monotonic() < deadline:
-        logger.info("Facebook: composer not visible; returning to the feed")
-        _return_to_feed(driver, package, low, high, logger)
-        _dismiss_popups(driver, logger)
-        composer = _wait_for_composer_entry(
-            driver, deadline, min(COMPOSER_FIRST_WAIT, timeout)
-        )
-        if composer is not None:
-            return composer
+    logger.info("Facebook: composer not visible; scrolling the feed to the top")
+    _scroll_to_top(driver, logger)
+    composer = _wait_for_composer_entry(
+        driver, min(COMPOSER_FIRST_WAIT, timeout)
+    )
+    if composer is not None:
+        return composer
 
-    if time.monotonic() < deadline:
-        logger.info("Facebook: scrolling the feed to the top")
-        _scroll_to_top(driver, logger)
-        composer = _wait_for_composer_entry(driver, deadline, timeout)
-        if composer is not None:
-            return composer
+    logger.info("Facebook: composer still missing; returning to the feed")
+    _return_to_feed(driver, package, low, high, logger)
+    _dismiss_popups(driver, logger)
+    _scroll_to_top(driver, logger)
+    composer = _wait_for_composer_entry(driver, min(timeout, 10.0))
+    if composer is not None:
+        return composer
 
     raise FacebookAutomationError(
         f"Timed out after {timeout:.0f}s waiting for the post composer"
     )
 
 
-def _wait_for_composer_entry(
-    driver: Any, deadline: float, max_wait: float
-) -> Any:
-    """Poll the composer entry locators until *deadline* or *max_wait*."""
+def _wait_for_composer_entry(driver: Any, max_wait: float) -> Any:
+    """Poll the composer entry locators for at most *max_wait* seconds."""
 
-    end = min(deadline, time.monotonic() + max(0.0, max_wait))
+    deadline = time.monotonic() + max(0.0, max_wait)
     while True:
         entry = _find_displayed(driver, _composer_prompt_locators())
         if entry is not None:
             return entry
-        if time.monotonic() >= end:
+        if time.monotonic() >= deadline:
             return None
         time.sleep(POLL_INTERVAL)
 
@@ -1090,8 +1086,64 @@ def _dismiss_popups(driver: Any, logger: logging.Logger) -> None:
             logger.info("Facebook: dismissed a popup (%s)", label)
 
 
-def _scroll_to_top(driver: Any, logger: logging.Logger, swipes: int = 2) -> None:
-    """Swipe down a couple of times so the feed composer is back on screen."""
+#: Bottom navigation labels of the Home tab; tapping it scrolls the feed up.
+_HOME_TAB_LABELS = ("Home", "Beranda")
+
+
+def _home_tab_locators() -> List[Locator]:
+    locators: List[Locator] = []
+    for label in _HOME_TAB_LABELS:
+        escaped = _escape_uiautomator(label)
+        locators.append(
+            (
+                BY_ANDROID_UIAUTOMATOR,
+                f'new UiSelector().descriptionContains("{escaped}")',
+            )
+        )
+        locators.append(
+            (
+                BY_ANDROID_UIAUTOMATOR,
+                f'new UiSelector().textContains("{escaped}")',
+            )
+        )
+    return locators
+
+
+def _tap_home_tab(driver: Any, logger: logging.Logger) -> bool:
+    """Tap the bottom Home tab, which scrolls the feed back to the top."""
+
+    element = _find_displayed(driver, _home_tab_locators())
+    if element is None:
+        return False
+
+    get_size = getattr(driver, "get_window_size", None)
+    if callable(get_size):
+        try:
+            size = get_size()
+            width = int(size.get("width", 0))
+            height = int(size.get("height", 0))
+        except Exception:
+            width = height = 0
+        if width > 0 and height > 0:
+            try:
+                location = element.location
+                element_size = element.size
+                center_x = location["x"] + element_size["width"] / 2
+                center_y = location["y"] + element_size["height"] / 2
+                # Only trust labels in the bottom navigation (phones) or the
+                # left rail (tablets), not feed cards that mention "Home".
+                if center_y < height * 0.7 and center_x > width * 0.2:
+                    return False
+            except Exception:
+                pass
+    return _tap_element(driver, element, logger)
+
+
+def _scroll_to_top(driver: Any, logger: logging.Logger, swipes: int = 4) -> None:
+    """Jump back to the top of the feed so the composer is on screen."""
+
+    if _tap_home_tab(driver, logger):
+        time.sleep(POLL_INTERVAL)
 
     get_size = getattr(driver, "get_window_size", None)
     if not callable(get_size):
@@ -1109,8 +1161,8 @@ def _scroll_to_top(driver: Any, logger: logging.Logger, swipes: int = 2) -> None
     if not callable(swipe):
         return
     center = width // 2
-    start_y = max(1, int(height * 0.25))
-    end_y = max(start_y + 1, int(height * 0.8))
+    start_y = max(1, int(height * 0.2))
+    end_y = max(start_y + 1, int(height * 0.85))
     for _ in range(max(0, swipes)):
         try:
             swipe(center, start_y, center, end_y, 300)
