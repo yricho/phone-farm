@@ -187,6 +187,43 @@ class DashboardStateTests(unittest.TestCase):
         self.assertTrue(snapshot["devices"][0]["connected"])
         self.assertEqual(snapshot["devices"][0]["session_id"], "session-d0")
 
+    def test_mute_state_survives_a_dashboard_restart(self):
+        bot = FakeBot(
+            rack=self.rack, driver_factory=lambda udid: FakeScreenDriver()
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            manifest = Path(directory) / "rack.json"
+            state = dashboard.DashboardState(
+                bot,
+                self.rack,
+                actions=fake_actions(),
+                manifest_path=manifest,
+            )
+            try:
+                with mock.patch.object(
+                    dashboard, "_adb_shell", return_value=None
+                ):
+                    result = state.set_device_muted("d0", True)
+                self.assertTrue(result["muted"])
+
+                reloaded = dashboard.DashboardState(
+                    bot,
+                    self.rack,
+                    actions=fake_actions(),
+                    manifest_path=manifest,
+                )
+                try:
+                    devices = {
+                        device["udid"]: device
+                        for device in reloaded.status()["devices"]
+                    }
+                    self.assertTrue(devices["d0"]["muted"])
+                    self.assertFalse(devices["d1"]["muted"])
+                finally:
+                    reloaded.shutdown()
+            finally:
+                state.shutdown()
+
     def test_connect_job_connects_the_rack(self):
         job = self.state.submit_connect()
         done = wait_job(self.state, job["id"])
@@ -1173,6 +1210,8 @@ class DashboardHttpTests(unittest.TestCase):
         self.assertIn('id="live-strip-next"', body)
         self.assertIn('id="screen-size"', body)
         self.assertIn('value="actual"', body)
+        self.assertIn('id="screen-mute"', body)
+        self.assertIn('icon-volume-off', body)
         self.assertIn('id="setup-scan"', body)
         self.assertIn('id="setup-save"', body)
         self.assertIn('id="setup-devices"', body)
@@ -1206,6 +1245,8 @@ class DashboardHttpTests(unittest.TestCase):
         self.assertIn("screen-panel", script)
         self.assertIn("renderLiveStrip", script)
         self.assertIn("applyScreenSize", script)
+        self.assertIn("toggleLiveMute", script)
+        self.assertIn("/audio", script)
         self.assertIn("scanSetup", script)
         self.assertIn("renderCampaignPlatforms", script)
         self.assertIn("maybeNotify", script)
@@ -1363,6 +1404,110 @@ class DashboardHttpTests(unittest.TestCase):
         )
         self.assertEqual(status, 502)
         self.assertIn("input failed", body["error"])
+
+    def _patch_adb_shell(self, get_output="volume is 7 in range [0..15]"):
+        calls = []
+
+        def fake(adb, udid, args, **kwargs):
+            calls.append((adb, udid, tuple(args)))
+            if "--get" in args:
+                return get_output
+            return ""
+
+        patcher = mock.patch.object(dashboard, "_adb_shell", side_effect=fake)
+        self.addCleanup(patcher.stop)
+        patcher.start()
+        return calls
+
+    def test_audio_endpoint_mutes_and_restores_with_adb(self):
+        self.bot.connect_devices(self.rack)
+        calls = self._patch_adb_shell()
+
+        status, body = self.request_json(
+            "/api/devices/d0/audio", "POST", {"muted": True}
+        )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(body["muted"])
+        self.assertEqual(body["method"], "adb")
+        self.assertEqual(body["volume"], 0)
+        self.assertEqual(body["previous_volume"], 7)
+        self.assertEqual(self.screen_driver.keys, [])
+        self.assertTrue(
+            any("--set" in call and "0" in call for _adb, _udid, call in calls)
+        )
+
+        status, snapshot = self.request_json("/api/status")
+        self.assertEqual(status, 200)
+        device = next(row for row in snapshot["devices"] if row["udid"] == "d0")
+        self.assertTrue(device["muted"])
+
+        status, body = self.request_json(
+            "/api/devices/d0/audio", "POST", {"muted": False}
+        )
+
+        self.assertEqual(status, 200)
+        self.assertFalse(body["muted"])
+        self.assertEqual(body["method"], "adb")
+        self.assertEqual(body["volume"], 7)
+        self.assertEqual(self.screen_driver.keys, [])
+
+        state_file = self.manifest.with_name(self.manifest.stem + ".state.json")
+        saved = json.loads(state_file.read_text(encoding="utf-8"))
+        self.assertFalse(saved["audio"]["muted"]["d0"])
+
+    def test_audio_endpoint_falls_back_to_appium_keycode(self):
+        self.bot.connect_devices(self.rack)
+
+        with mock.patch.object(dashboard, "_adb_shell", return_value=None):
+            status, body = self.request_json(
+                "/api/devices/d0/audio", "POST", {"muted": True}
+            )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(body["method"], "appium")
+        self.assertEqual(
+            self.screen_driver.keys[-1], dashboard.KEYCODE_VOLUME_MUTE
+        )
+
+        with mock.patch.object(dashboard, "_adb_shell", return_value=None):
+            status, body = self.request_json(
+                "/api/devices/d0/audio", "POST", {"muted": False}
+            )
+
+        self.assertEqual(status, 200)
+        self.assertFalse(body["muted"])
+        self.assertEqual(len(self.screen_driver.keys), 2)
+
+    def test_audio_endpoint_validation_and_offline_device(self):
+        status, body = self.request_json(
+            "/api/devices/d0/audio", "POST", {"muted": True}
+        )
+        self.assertEqual(status, 409)
+        self.assertIn("not connected", body["error"])
+
+        self.bot.connect_devices(self.rack)
+        for payload in ({}, {"muted": "yes"}, {"muted": 1}):
+            with self.subTest(payload=payload):
+                status, body = self.request_json(
+                    "/api/devices/d0/audio", "POST", payload
+                )
+                self.assertEqual(status, 400)
+                self.assertIn("muted", body["error"])
+
+    def test_audio_endpoint_returns_bad_gateway_on_driver_error(self):
+        self.bot.connect_devices(self.rack)
+        self.screen_driver.press_keycode = mock.Mock(
+            side_effect=RuntimeError("no key presses")
+        )
+
+        with mock.patch.object(dashboard, "_adb_shell", return_value=None):
+            status, body = self.request_json(
+                "/api/devices/d0/audio", "POST", {"muted": True}
+            )
+
+        self.assertEqual(status, 502)
+        self.assertIn("audio control failed", body["error"])
 
     def test_connect_endpoint_runs_a_job(self):
         status, job = self.request_json("/api/connect", "POST", {})

@@ -475,29 +475,43 @@ Alur yang dijalankan:
    `Apa yang ada di pikiran`
 3. tunggu editor muncul (build baru membuka halaman terpisah
    **“Postingan baru” / “Buat postingan baru”**), lalu **tap field tersebut**
-   agar fokus
+   agar fokus. Kalau editor belum muncul, composer di-tap ulang dan field yang
+   sedang fokus dipakai (mis. app masih di layar composer sisa percobaan
+   sebelumnya), jadi langkah ini tidak langsung timeout 20 detik.
 4. ketik `post_text` di editor
 5. sembunyikan keyboard bila perlu
-6. tombol final `Post` / `Posting` / `Bagikan` / `Kirim` / `Share`
-   (kandidat yang `clickable="false"` dilewati). Pada Facebook **588+** alurnya
-   dua langkah: tombol **`Berikutnya`** di layar pertama, lalu tombol
+6. tombol final `Post` / `Posting` / `Bagikan` / `Kirim` / `Share`, termasuk
+   label terbungkus (`Posting sekarang`, `Posting sebagai …`). Judul layar
+   `Postingan baru` tidak pernah dianggap tombol. Kandidat yang
+   `clickable="false"` dicoba lewat tap koordinat. Pada Facebook **588+**
+   alurnya dua langkah: tombol **`Berikutnya`** di layar pertama, lalu tombol
    **`Posting`** di layar pengaturan postingan — keduanya ditangani otomatis.
 
 Nilai balik `PostResult` berisi `post_text`, `status` (`"posted"`),
 `button_text`, dan properti `posted`. Jika satu langkah gagal,
 `FacebookAutomationError` dilempar dengan konteks package.
 
+**Saat gagal (diagnosa):** page source dan screenshot layar otomatis disimpan,
+lalu path-nya ditempel di pesan error, mis.
+`Timed out after 20s waiting for the post editor (UI dump: …\Temp\gads-social-media-bot\facebook-post-20261119-134501.xml, …png)`.
+Kirim file XML itu untuk analisis locator. Set `GADS_UI_DUMP_DIR` bila ingin
+menyimpan dump di folder lain.
+
 **Catatan:** tombol Post tidak akan tertukar dengan editor walaupun isi
 postingan persis `"Post"` (kandidat `EditText` difilter). Pill composer di feed
 (“Apa yang Anda pikirkan?”) juga sering berupa `EditText`; pill tersebut
-dikecualikan berdasarkan `resource-id`/`bounds` sehingga teks tidak pernah
-diketik ke feed. Locator composer dan tombol Post ada di
+dikecualikan berdasarkan **element id** Appium (fallback ke
+`resource-id`/`bounds` bila id tidak tersedia) sehingga teks tidak pernah
+diketik ke feed, sementara editor baru yang kebetulan punya `bounds` sama tetap
+ditemukan. Locator composer dan tombol Post ada di
 `_composer_prompt_locators()` / `_post_button_locators()` pada `facebook.py`
 bila perlu disesuaikan.
 
-Kalau versi Facebook di HP berbeda (mis. 588.x) dan langkah di atas timeout,
-dump dulu hierarki layarnya dengan `dump_ui.py` (lihat bagian **Dump UI**) lalu
-sesuaikan locator berdasarkan `class`/`text`/`content-desc` yang muncul.
+Kalau versi Facebook di HP berbeda (mis. 588.x) dan langkah di atas masih
+timeout, buka dulu file `UI dump: …xml` yang otomatis disimpan saat gagal (path
+ada di pesan error), atau dump manual hierarki layarnya dengan `dump_ui.py`
+(lihat bagian **Dump UI**), lalu sesuaikan locator berdasarkan
+`class`/`text`/`content-desc` yang muncul.
 
 ## Komentari postingan Facebook
 
@@ -663,7 +677,8 @@ Fitur:
 - pilihan ukuran live screen: **Fit / Kecil / Sedang / Besar / 1:1 asli** —
   rasio device selalu terjaga, mode **1:1** menampilkan resolusi asli dan bisa
   discroll; resolusi screenshot ditampilkan di header;
-- panel live **interaktif** (tap, swipe, ketik, Back/Home/Enter);
+- panel live **interaktif** (tap, swipe, ketik, Back/Home/Enter, dan
+  **Mute/Unmute** suara HP);
 - tombol **Connect all** / **Disconnect all**;
 - **mode gelap/terang** lewat tombol matahari/bulan di topbar; pilihan disimpan
   di browser dan default mengikuti `prefers-color-scheme` sistem;
@@ -676,7 +691,8 @@ Fitur:
 - **Scheduler**: setiap action/bulk/campaign bisa diberi waktu eksekusi
   (`datetime-local`); job berstatus `scheduled`, tersimpan di
   `<manifest>.state.json`, dan tetap ada setelah dashboard restart. File state
-  ini di-ignore Git dan juga menyimpan daily limit/analytics;
+  ini di-ignore Git dan juga menyimpan daily limit/analytics serta status mute
+  suara per device;
 - **Run action**: pilih **platform** (Facebook, Instagram, Threads, X,
   TikTok); aksi follow/post/comment/**like/save/reply** muncul sesuai
   capability platform, target semua device atau satu device;
@@ -723,6 +739,28 @@ POST /api/devices/<udid>/input
 Device offline → `409`; driver/Appium gagal → `502`. Endpoint ini bisa dipakai
 untuk debugging manual maupun test otomasi UI.
 
+### Mute suara device di live session
+
+Tombol **Mute** / **Unmute** di panel live membisukan audio media HP tanpa
+menghentikan live screen, berguna saat memantau banyak HP sekaligus:
+
+- HP yang terhubung ke komputer dashboard (adb tersedia) diatur lewat
+  `adb shell` — volume stream media diset ke `0`, lalu **dikembalikan ke level
+  sebelumnya** saat Unmute (`cmd media_session volume`, fallback `media volume`);
+- HP remote (mis. lewat GADS/Appium) memakai keycode `VOLUME_MUTE` (164) lewat
+  sesi Appium;
+- status mute disimpan di `<manifest>.state.json`, jadi label tombol tetap benar
+  setelah dashboard restart, dan `/api/status` menyertakan `muted` per device.
+
+```http
+POST /api/devices/<udid>/audio
+{"muted": true}     # atau {"muted": false}
+```
+
+Respons berisi `ok`, `muted`, plus `method` (`adb`/`appium`) dan `volume` bila
+tersedia. Device offline → `409`; body tidak valid → `400`; gagal di
+driver/adb → `502`.
+
 Aksi tidak dieksekusi di request HTTP. Semua masuk **antrean job** dan diproses
 satu per satu oleh worker background, sehingga:
 
@@ -744,6 +782,7 @@ API yang dipakai UI:
 | `GET` | `/api/devices/<udid>/stream?interval=1` | MJPEG live screen (dipakai `<img>`) |
 | `GET` | `/api/devices/<udid>/screenshot` | Satu snapshot PNG (debug/fallback) |
 | `POST` | `/api/devices/<udid>/input` | Tap/swipe/teks/key interaktif dengan koordinat fraksi 0–1 |
+| `POST` | `/api/devices/<udid>/audio` | `{"muted": true\|false}` — mute/unmute suara media HP untuk live session |
 | `POST` | `/api/connect` | Body `{}` atau `{"udids": [...]}`; antrekan connect |
 | `POST` | `/api/disconnect` | Antrekan disconnect all |
 | `POST` | `/api/action` | `{"platform": "...", "action": "follow\|post\|comment\|like\|save\|reply", "target": "all\|<udid>", "params": {...}, "schedule_at": "ISO-8601 optional"}` |
@@ -1069,7 +1108,9 @@ sungguhan. Cakupan: koneksi 20 HP paralel, isolasi kegagalan, lock per UDID,
 aksi massal, reconnect, parsing manifest (termasuk UTF-8 BOM), alur `follow_user`
 (happy path, `already_following`, tombol Follow tidak ditemukan, validasi
 argumen, delay acak 3–7 detik), alur `create_post` (happy path, label Indonesia,
-multiline, tombol Post hilang, validasi teks, delay acak), alur
+multiline, tombol Post hilang, validasi teks, delay acak, bounds pill/editor
+identik, layar composer sudah terbuka, tap composer diulang, label tombol
+terbungkus + tap koordinat, editor berbasis `View`, auto UI dump saat gagal), alur
 `comment_on_post` (deep link, kotak komentar tersembunyi, label Indonesia,
 fallback IME/Enter, URL gagal dibuka, foreground gagal, validasi, delay acak),
 registry & capability 5 platform (Instagram, Threads, X, TikTok), flow
@@ -1079,7 +1120,8 @@ progress, retry item gagal, cancel, platform dispatch, **scheduler persisten,
 campaign lintas platform, daily limit, analytics, health check**, status/log
 API, static assets, validasi request, log capture, live stream MJPEG, snapshot
 PNG, share capture per device, interactive input tap/swipe/text/key dengan
-scaling koordinat, auto-stop stream), encoding console Windows, pembuatan
+scaling koordinat, **mute/unmute suara via adb dan fallback keycode Appium +
+persistensi state**, auto-stop stream), encoding console Windows, pembuatan
 manifest dari output adb, serta round-trip capability lewat
 `UiAutomator2Options` asli bila `Appium-Python-Client` terpasang.
 

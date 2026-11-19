@@ -24,6 +24,7 @@ import json
 import logging
 import os
 import queue
+import re
 import socket
 import subprocess
 import sys
@@ -109,6 +110,15 @@ PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 #: Consecutive adb failures before a stream stops trying the local path.
 ADB_MAX_FAILURES = 3
 
+#: Android keycode for the hardware mute toggle (fallback for remote devices).
+KEYCODE_VOLUME_MUTE = 164
+#: AudioManager stream id used for media playback.
+AUDIO_STREAM_MUSIC = 3
+#: ``volume is 7 in range [0..15]`` as printed by the adb volume helpers.
+VOLUME_OUTPUT_PATTERN = re.compile(
+    r"volume is (\d+) in range \[(\d+)\.\.(\d+)\]", re.IGNORECASE
+)
+
 
 def _validate_action_delay(
     delay_range: Optional[Sequence[float]],
@@ -127,6 +137,122 @@ def _validate_action_delay(
     if low_value < 0 or high_value < 0 or low_value > high_value:
         raise ValueError("action delay must satisfy 0 <= min <= max")
     return (low_value, high_value)
+
+
+def _adb_shell(
+    adb: str, udid: str, args: Sequence[str], *, timeout: float = 5.0
+) -> Optional[str]:
+    """Run ``adb -s <udid> shell <args>`` and return stdout.
+
+    ``None`` means adb is missing, the device is not attached locally or the
+    command failed, so callers can fall back to Appium.
+    """
+
+    try:
+        result = subprocess.run(
+            [adb, "-s", udid, "shell", *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout or ""
+
+
+def _read_media_volume(
+    adb: str, udid: str
+) -> Tuple[Optional[int], Optional[int]]:
+    """Return ``(volume, max_volume)`` for the media stream, else ``(None, None)``."""
+
+    for args in (
+        [
+            "cmd",
+            "media_session",
+            "volume",
+            "--stream",
+            str(AUDIO_STREAM_MUSIC),
+            "--get",
+        ],
+        ["media", "volume", "--stream", str(AUDIO_STREAM_MUSIC), "--get"],
+    ):
+        output = _adb_shell(adb, udid, args)
+        match = VOLUME_OUTPUT_PATTERN.search(output or "")
+        if match:
+            return int(match.group(1)), int(match.group(3))
+    return None, None
+
+
+def _write_media_volume(adb: str, udid: str, level: int) -> bool:
+    """Set the media stream volume through adb; ``False`` when adb is unusable."""
+
+    for args in (
+        [
+            "cmd",
+            "media_session",
+            "volume",
+            "--stream",
+            str(AUDIO_STREAM_MUSIC),
+            "--set",
+            str(level),
+        ],
+        [
+            "media",
+            "volume",
+            "--stream",
+            str(AUDIO_STREAM_MUSIC),
+            "--set",
+            str(level),
+        ],
+    ):
+        if _adb_shell(adb, udid, args) is not None:
+            return True
+    return False
+
+
+def set_media_muted(
+    driver: Any,
+    *,
+    adb: str,
+    udid: str,
+    muted: bool,
+    saved_volume: Optional[int],
+) -> Dict[str, Any]:
+    """Mute or unmute the device media audio.
+
+    Devices attached to the dashboard host are muted by setting the media
+    stream volume to 0 through adb and restored to the volume they had before.
+    Remote devices (e.g. GADS providers) fall back to the Android volume-mute
+    keycode through the Appium session.
+    """
+
+    if muted:
+        current, maximum = _read_media_volume(adb, udid)
+        if _write_media_volume(adb, udid, 0):
+            return {
+                "method": "adb",
+                "volume": 0,
+                "previous_volume": current,
+                "max_volume": maximum,
+            }
+    else:
+        restore = saved_volume
+        if restore is None:
+            _current, maximum = _read_media_volume(adb, udid)
+            restore = max(1, (maximum or 15) // 2)
+        if _write_media_volume(adb, udid, restore):
+            return {"method": "adb", "volume": restore}
+
+    press = getattr(driver, "press_keycode", None)
+    if not callable(press):
+        raise RuntimeError("driver does not support key presses")
+    press(KEYCODE_VOLUME_MUTE)
+    return {"method": "appium", "keycode": KEYCODE_VOLUME_MUTE}
 
 
 class AdbFrameGrabber:
@@ -514,6 +640,12 @@ class ScreenStreamManager:
             )
         return value
 
+    @property
+    def adb(self) -> str:
+        """Path to the adb executable used for local device helpers."""
+
+        return self._adb
+
     def clamp_interval(self, interval: Any) -> float:
         if interval is None:
             return self.default_interval
@@ -618,6 +750,9 @@ class DashboardState:
         self._daily_limits = dict(DEFAULT_DAILY_LIMITS)
         self._usage: Dict[str, Dict[str, int]] = {}
         self._analytics: Dict[str, Any] = {}
+        self._audio_muted: Dict[str, bool] = {}
+        self._saved_volumes: Dict[str, int] = {}
+        self._audio_lock = threading.Lock()
         self._max_workers = max(1, int(max_workers))
         if platforms is not None:
             self._platforms = dict(platforms)
@@ -732,6 +867,25 @@ class DashboardState:
         if isinstance(analytics, Mapping):
             self._analytics = dict(analytics)
 
+        audio = data.get("audio")
+        if isinstance(audio, Mapping):
+            muted = audio.get("muted")
+            if isinstance(muted, Mapping):
+                self._audio_muted = {
+                    str(udid): value
+                    for udid, value in muted.items()
+                    if isinstance(value, bool)
+                }
+            volumes = audio.get("saved_volume")
+            if isinstance(volumes, Mapping):
+                saved_volumes: Dict[str, int] = {}
+                for udid, value in volumes.items():
+                    try:
+                        saved_volumes[str(udid)] = int(value)
+                    except (TypeError, ValueError):
+                        continue
+                self._saved_volumes = saved_volumes
+
         max_id = 0
         for raw in data.get("scheduled", []):
             if not isinstance(raw, Mapping):
@@ -794,6 +948,10 @@ class DashboardState:
                 "limits": dict(self._daily_limits),
                 "usage": self._usage,
                 "analytics": self._analytics,
+                "audio": {
+                    "muted": dict(self._audio_muted),
+                    "saved_volume": dict(self._saved_volumes),
+                },
                 "scheduled": scheduled,
             }
         temporary = self._state_path.with_name(
@@ -1795,10 +1953,54 @@ class DashboardState:
         return f"{prefix}{action} · {target_label}"  # pragma: no cover
 
     # ------------------------------------------------------------------
+    # Live session audio
+    # ------------------------------------------------------------------
+    def set_device_muted(self, udid: str, muted: bool) -> Dict[str, Any]:
+        """Mute or unmute the media audio of one connected device.
+
+        Local devices are muted by setting the media stream volume to 0 through
+        adb and restored to their previous level. Remote devices fall back to
+        the Android volume-mute keycode through their Appium session.
+        """
+
+        if not isinstance(muted, bool):
+            raise ValueError("muted must be true or false")
+        # Raises DeviceNotConnectedError when the device has no Appium session.
+        driver = self.bot.get_driver(udid)
+
+        with self._audio_lock:
+            result = set_media_muted(
+                driver,
+                adb=self.screen_streams.adb,
+                udid=udid,
+                muted=muted,
+                saved_volume=self._saved_volumes.get(udid),
+            )
+            with self._lock:
+                self._audio_muted[udid] = muted
+                if muted:
+                    previous = result.get("previous_volume")
+                    if isinstance(previous, int) and previous > 0:
+                        self._saved_volumes[udid] = previous
+                else:
+                    self._saved_volumes.pop(udid, None)
+            self._persist_state()
+
+        logging.getLogger(LOGGER_NAME).info(
+            "Audio %s for %s via %s",
+            "muted" if muted else "unmuted",
+            udid,
+            result.get("method", "unknown"),
+        )
+        return {"ok": True, "udid": udid, "muted": muted, **result}
+
+    # ------------------------------------------------------------------
     # API snapshots
     # ------------------------------------------------------------------
     def status(self) -> Dict[str, Any]:
         connections = self.bot.connections
+        with self._lock:
+            muted_states = dict(self._audio_muted)
         devices = []
         for spec in self.rack.devices:
             connection = connections.get(spec.udid)
@@ -1811,6 +2013,7 @@ class DashboardState:
                     "connected": connection is not None,
                     "session_id": connection.session_id if connection else None,
                     "server_url": connection.server_url if connection else None,
+                    "muted": muted_states.get(spec.udid, False),
                 }
             )
 
@@ -2445,9 +2648,12 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                     len(parts) == 4
                     and parts[0] == "api"
                     and parts[1] == "devices"
-                    and parts[3] == "input"
+                    and parts[3] in {"input", "audio"}
                 ):
-                    self._serve_input(parts[2], payload)
+                    if parts[3] == "input":
+                        self._serve_input(parts[2], payload)
+                    else:
+                        self._serve_audio(parts[2], payload)
                     return
                 self._send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
                 return
@@ -2557,6 +2763,34 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             )
             return
         self._send_bytes(frame, "image/png")
+
+    def _serve_audio(self, udid: str, payload: Dict[str, Any]) -> None:
+        muted = payload.get("muted")
+        if not isinstance(muted, bool):
+            self._send_json(
+                {"error": "muted must be true or false"}, HTTPStatus.BAD_REQUEST
+            )
+            return
+
+        try:
+            result = self.server.state.set_device_muted(udid, muted)
+        except DeviceNotConnectedError:
+            self._send_json(
+                {"error": "device is not connected"}, HTTPStatus.CONFLICT
+            )
+            return
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        except Exception:
+            logging.getLogger(LOGGER_NAME).warning(
+                "Audio control failed for %s", udid, exc_info=True
+            )
+            self._send_json(
+                {"error": "audio control failed"}, HTTPStatus.BAD_GATEWAY
+            )
+            return
+        self._send_json(result)
 
     def _serve_input(self, udid: str, payload: Dict[str, Any]) -> None:
         input_type = payload.get("type")

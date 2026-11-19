@@ -982,6 +982,7 @@ html[data-theme="light"] .theme-icon-moon { display: block; }
   border-top: 1px solid var(--line-soft);
 }
 .screen-keys { display: flex; flex-wrap: wrap; gap: 6px; }
+.screen-keys .btn.is-active { background: var(--surface-active); color: var(--text); }
 .screen-text-row { display: flex; gap: 8px; }
 .screen-text-row input {
   flex: 1;

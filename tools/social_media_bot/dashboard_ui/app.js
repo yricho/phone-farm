@@ -69,6 +69,8 @@
     online: true,
     liveStrip: new Map(),
     liveUdid: null,
+    liveMuted: false,
+    liveMuteBusy: false,
     platform: null,
     platformsSignature: null,
     mode: "single",
@@ -161,6 +163,7 @@
     analyticsDetail: $("analytics-detail"),
     automationHint: $("automation-hint"),
     screenBack: $("screen-back"),
+    screenMute: $("screen-mute"),
     screenHome: $("screen-home"),
     screenEnter: $("screen-enter"),
     screenText: $("screen-text"),
@@ -1102,6 +1105,49 @@
     }
   }
 
+  function renderMuteButton(device) {
+    const muted = Boolean(device && device.muted);
+    state.liveMuted = muted;
+    els.screenMute.classList.toggle("is-active", muted);
+    els.screenMute.setAttribute("aria-pressed", String(muted));
+    setButtonLabel(els.screenMute, muted ? "Unmute" : "Mute");
+    els.screenMute.title = muted ? "Aktifkan suara HP" : "Mute suara HP";
+    const use = els.screenMute.querySelector("use");
+    if (use) use.setAttribute("href", muted ? "#icon-volume-off" : "#icon-volume");
+    els.screenMute.disabled =
+      !device || !device.connected || state.liveMuteBusy;
+  }
+
+  async function toggleLiveMute() {
+    const device = currentDevice(state.liveUdid);
+    if (!device || !device.connected || state.liveMuteBusy) return;
+    const next = !state.liveMuted;
+    state.liveMuteBusy = true;
+    els.screenMute.disabled = true;
+    els.screenInputStatus.textContent = next
+      ? "Mute suara HP…"
+      : "Mengaktifkan suara HP…";
+    try {
+      const result = await api(
+        `/api/devices/${encodeURIComponent(device.udid)}/audio`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ muted: next }),
+        },
+      );
+      device.muted = Boolean(result.muted);
+      els.screenInputStatus.textContent = result.muted
+        ? "Suara HP di-mute."
+        : "Suara HP aktif.";
+    } catch (error) {
+      els.screenInputStatus.textContent = `Gagal ubah suara: ${error.message}`;
+    } finally {
+      state.liveMuteBusy = false;
+      renderMuteButton(device);
+    }
+  }
+
   function fillLiveMeta(device) {
     if (!device) {
       els.panelSlot.textContent = "—";
@@ -1124,6 +1170,7 @@
     els.liveTitle.textContent = `Live · ${device.slot}`;
     els.liveSubtitle.textContent = `${device.udid} · port ${device.appium_port}`;
     fillLiveMeta(device);
+    renderMuteButton(device);
     markLiveCard(udid);
     els.screenText.value = "";
     els.screenInputStatus.textContent = device.connected
@@ -1145,6 +1192,7 @@
     els.liveTitle.textContent = `Live · ${device.slot}`;
     els.liveSubtitle.textContent = `${device.udid} · port ${device.appium_port}`;
     fillLiveMeta(device);
+    renderMuteButton(device);
     if (!device.connected) {
       stopLiveStream();
       els.liveEmpty.hidden = false;
@@ -1187,6 +1235,7 @@
     els.liveTitle.textContent = "Live screen";
     els.liveSubtitle.textContent = "Pilih device dari daftar di bawah";
     fillLiveMeta(null);
+    renderMuteButton(null);
     setLiveStatus("—", "muted");
     els.liveRetry.disabled = true;
     els.liveEmpty.hidden = false;
@@ -1491,6 +1540,7 @@
   els.screenBack.addEventListener("click", () => sendScreenKey("back"));
   els.screenHome.addEventListener("click", () => sendScreenKey("home"));
   els.screenEnter.addEventListener("click", () => sendScreenKey("enter"));
+  els.screenMute.addEventListener("click", toggleLiveMute);
   els.screenSendText.addEventListener("click", sendScreenText);
   els.screenText.addEventListener("keydown", (event) => {
     if (event.key === "Enter") {

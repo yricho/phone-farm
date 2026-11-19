@@ -104,6 +104,15 @@
     <symbol id="icon-trash" viewBox="0 0 24 24">
       <path d="M4 7h16M9 7V4h6v3M7 7l1 14h8l1-14M10 11v6M14 11v6"></path>
     </symbol>
+    <symbol id="icon-volume" viewBox="0 0 24 24">
+      <path d="M3 9v6h4l5 5V4L7 9H3Z"></path>
+      <path d="M15.5 8.5a5 5 0 0 1 0 7"></path>
+      <path d="M18 6a8.5 8.5 0 0 1 0 12"></path>
+    </symbol>
+    <symbol id="icon-volume-off" viewBox="0 0 24 24">
+      <path d="M3 9v6h4l5 5V4L7 9H3Z"></path>
+      <path d="m16 9 5 6M21 9l-5 6"></path>
+    </symbol>
   </svg>
 
   <header class="topbar">
@@ -247,6 +256,12 @@
                       type="button">
                 <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-corner-down-left"></use></svg>
                 <span>Enter</span>
+              </button>
+              <button id="screen-mute" class="btn btn-ghost btn-small"
+                      type="button" aria-pressed="false" disabled
+                      title="Mute / unmute suara HP">
+                <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-volume"></use></svg>
+                <span>Mute</span>
               </button>
             </div>
             <div class="screen-text-row">
