@@ -4,8 +4,10 @@ The fake driver mimics the subset of the Appium/UiAutomator2 API used by
 ``facebook.follow_user`` so the flow can be verified without a real phone.
 """
 
+import os
 import re
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -31,12 +33,26 @@ class FakeElement:
         class_name="android.widget.TextView",
         resource_id="",
         displayed=True,
+        bounds="",
+        clickable=None,
+        enabled=None,
+        focusable=None,
+        element_id=None,
     ):
         self.text = text
         self.content_desc = content_desc
         self.class_name = class_name
         self.resource_id = resource_id
+        self.bounds = bounds
         self.displayed = displayed
+        self.clickable = clickable
+        self.enabled = enabled
+        self.focusable = focusable
+        #: Appium assigns an element id per node; two nodes can share
+        #: resource-id/bounds, which is exactly the bug this drives.
+        self.id = element_id
+        self.location = {"x": 0, "y": 0}
+        self.size = {"width": 0, "height": 0}
         self.clicked = 0
 
     def click(self):
@@ -57,11 +73,21 @@ class FakeElement:
             "content-desc": self.content_desc,
             "class": self.class_name,
             "resource-id": self.resource_id,
+            "bounds": self.bounds,
+            "clickable": self.clickable,
+            "enabled": self.enabled,
+            "focusable": self.focusable,
         }.get(name)
 
 
 def _match_uiautomator(element, selector):
-    for pattern in ("textContains", "descriptionContains", "text"):
+    for pattern in (
+        "textContains",
+        "descriptionContains",
+        "textStartsWith",
+        "descriptionStartsWith",
+        "text",
+    ):
         match = re.search(rf'{pattern}\("((?:[^"\\]|\\.)*)"\)', selector)
         if match is None:
             continue
@@ -70,8 +96,19 @@ def _match_uiautomator(element, selector):
             return element.text == needle
         if pattern == "descriptionContains":
             return needle in element.content_desc
+        if pattern == "textStartsWith":
+            return element.text.startswith(needle)
+        if pattern == "descriptionStartsWith":
+            return element.content_desc.startswith(needle)
         return needle in element.text
     return False
+
+
+class FakeSwitchTo:
+    """Mimics ``driver.switch_to`` for the focused-element fallback."""
+
+    def __init__(self):
+        self.active_element = None
 
 
 class FakeDriver:
@@ -85,6 +122,8 @@ class FakeDriver:
         self.keyboard_hidden = 0
         self.scripts = []
         self.script_error = None
+        self.switch_to = FakeSwitchTo()
+        self.page_source = ""
 
     def activate_app(self, package):
         self.activated.append(package)
@@ -547,6 +586,186 @@ class CreatePostTests(unittest.TestCase):
         # that submits the post (the Button is).
         self.assertEqual(refs["editor"].clicked, 1)
         self.assertEqual(result.button_text, "Post")
+
+    def test_create_post_ignores_identical_bounds_between_pill_and_editor(self):
+        # UiAutomator2 can report the same resource-id/bounds for two different
+        # nodes: the feed pill and the editor of the screen it opens. They must
+        # be told apart by element id, otherwise the editor is excluded and the
+        # flow times out waiting for it.
+        same_bounds = "[0,200][1080,320]"
+        pill = FakeElement(
+            text="Apa yang Anda pikirkan?",
+            class_name="android.widget.EditText",
+            bounds=same_bounds,
+            element_id="pill-node",
+        )
+        editor = FakeElement(
+            class_name="android.widget.EditText",
+            bounds=same_bounds,
+            element_id="editor-node",
+        )
+        button = FakeElement(
+            text="Posting",
+            content_desc="Posting",
+            class_name="android.widget.Button",
+            element_id="post-button",
+        )
+        driver = FakeDriver([pill, editor, button])
+
+        result = create_post(driver, "Halo node baru")
+
+        self.assertTrue(result.posted)
+        self.assertEqual(editor.text, "Halo node baru")
+        self.assertEqual(pill.text, "Apa yang Anda pikirkan?")
+        self.assertEqual(button.clicked, 1)
+
+    def test_create_post_recovers_when_composer_screen_is_already_open(self):
+        # A previous failed run can leave Facebook on "Postingan baru"; the
+        # element found as the composer is then the editor itself.
+        editor = FakeElement(
+            text="Apa yang Anda pikirkan?",
+            class_name="android.widget.EditText",
+            resource_id="com.facebook.katana:id/composer_edit_text",
+            element_id="editor-node",
+        )
+        button = FakeElement(
+            text="Posting",
+            content_desc="Posting",
+            class_name="android.widget.Button",
+            element_id="post-button",
+        )
+        driver = FakeDriver([editor, button])
+        driver.switch_to.active_element = editor
+
+        result = create_post(driver, "Halo lanjutan", timeout=0.1)
+
+        self.assertTrue(result.posted)
+        self.assertEqual(editor.text, "Halo lanjutan")
+        self.assertEqual(button.clicked, 1)
+
+    def test_create_post_taps_the_composer_again_when_nothing_opens(self):
+        editor = FakeElement(
+            class_name="android.widget.EditText",
+            displayed=False,
+            element_id="editor-node",
+        )
+        button = FakeElement(
+            text="Bagikan",
+            content_desc="Bagikan",
+            class_name="android.widget.Button",
+            displayed=False,
+            element_id="post-button",
+        )
+
+        class RevealOnSecondTap(FakeElement):
+            def __init__(self, targets, **kwargs):
+                super().__init__(**kwargs)
+                self.targets = targets
+
+            def click(self):
+                super().click()
+                if self.clicked >= 2:
+                    for target in self.targets:
+                        target.displayed = True
+
+        composer = RevealOnSecondTap(
+            [editor, button],
+            text="What's on your mind, Tester?",
+            element_id="composer-node",
+        )
+        driver = FakeDriver([composer, editor, button])
+
+        result = create_post(driver, "Halo ulang", timeout=0.1)
+
+        self.assertTrue(result.posted)
+        self.assertEqual(composer.clicked, 2)
+        self.assertEqual(editor.text, "Halo ulang")
+
+    def test_create_post_accepts_wrapped_post_label_and_taps_by_coordinate(self):
+        class Stubborn(FakeElement):
+            def click(self):
+                super().click()
+                raise RuntimeError("element is not clickable")
+
+        prompt = FakeElement(text="Apa yang Anda pikirkan?", element_id="prompt-node")
+        editor = FakeElement(
+            class_name="android.widget.EditText", element_id="editor-node"
+        )
+        wrapped = Stubborn(
+            text="Posting sekarang",
+            content_desc="Posting sekarang",
+            class_name="android.widget.TextView",
+            clickable="false",
+            element_id="wrapped-button",
+        )
+        wrapped.location = {"x": 900, "y": 180}
+        wrapped.size = {"width": 120, "height": 80}
+        driver = FakeDriver([prompt, editor, wrapped])
+
+        result = create_post(driver, "Halo label", timeout=0.1)
+
+        self.assertTrue(result.posted)
+        self.assertEqual(wrapped.clicked, 1)
+        self.assertIn(
+            ("mobile: clickGesture", {"x": 960, "y": 220}), driver.scripts
+        )
+
+    def test_create_post_finds_a_view_based_editor_placeholder(self):
+        prompt = FakeElement(text="Apa yang Anda pikirkan?", element_id="prompt-node")
+        editor = FakeElement(
+            text="Tulis sesuatu...",
+            class_name="android.view.View",
+            clickable="true",
+            element_id="view-editor",
+        )
+        button = FakeElement(
+            text="Posting",
+            content_desc="Posting",
+            class_name="android.widget.Button",
+            element_id="post-button",
+        )
+        driver = FakeDriver([prompt, editor, button])
+
+        result = create_post(driver, "Halo view")
+
+        self.assertTrue(result.posted)
+        self.assertIn("Halo view", editor.text)
+
+    def test_create_post_saves_ui_dump_when_it_fails(self):
+        driver = FakeDriver([])
+        driver.page_source = "<hierarchy rotation='0' />"
+        driver.get_screenshot_as_png = lambda: b"\x89PNG-fake"
+
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.dict(
+                os.environ, {"GADS_UI_DUMP_DIR": directory}, clear=False
+            ):
+                with self.assertRaises(FacebookAutomationError) as ctx:
+                    create_post(driver, "Halo", timeout=0.05)
+
+            self.assertIn("post composer", str(ctx.exception))
+            self.assertIn("UI dump:", str(ctx.exception))
+            saved = os.listdir(directory)
+
+        self.assertTrue(any(name.endswith(".xml") for name in saved))
+        self.assertTrue(any(name.endswith(".png") for name in saved))
+
+    def test_create_post_survives_a_broken_page_source(self):
+        class BrokenSource(FakeDriver):
+            @property
+            def page_source(self):
+                raise RuntimeError("session is gone")
+
+            @page_source.setter
+            def page_source(self, value):
+                pass
+
+        driver = BrokenSource([])
+
+        with self.assertRaises(FacebookAutomationError) as ctx:
+            create_post(driver, "Halo", timeout=0.05)
+
+        self.assertIn("post composer", str(ctx.exception))
 
     def test_create_post_raises_when_composer_is_missing(self):
         elements, _refs = build_composer_elements(with_prompt=False)

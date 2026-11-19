@@ -12,8 +12,11 @@ step stops working, tune the locator lists at the bottom of this module.
 from __future__ import annotations
 
 import logging
+import os
 import random
+import tempfile
 import time
+from pathlib import Path
 from typing import Any, List, Optional, Sequence, Tuple
 from urllib.parse import urlsplit
 
@@ -65,6 +68,8 @@ BY_XPATH = "xpath"
 KEYCODE_ENTER = 66
 POLL_INTERVAL = 0.5
 OPTIONAL_TAB_TIMEOUT = 8.0
+#: Seconds to wait for the composer editor before tapping the composer again.
+EDITOR_FIRST_WAIT = 8.0
 #: Random pause inserted between steps, in seconds.
 DEFAULT_DELAY_RANGE = (3.0, 7.0)
 
@@ -179,6 +184,12 @@ def create_post(
     text, then tap **Post**. A random pause (default **3-7 seconds**) separates
     every step.
 
+    When the composer screen takes a while (or a previous failed run left the app
+    on it), the composer is tapped again and the focused field is reused before
+    the step fails. A failed run also saves the Appium page source and a
+    screenshot so the locators can be tuned; the paths are appended to the
+    raised error and can be redirected with ``GADS_UI_DUMP_DIR``.
+
     Args:
         driver: Connected Appium ``WebDriver``, e.g. ``bot.get_driver(udid)``.
         post_text: Text to publish. Must not be blank; at most 63,206 characters
@@ -211,16 +222,7 @@ def create_post(
         composer = _wait_for_any(
             driver, _composer_prompt_locators(), timeout, "the post composer"
         )
-        composer.click()
-        _pause(low, high, log, "opening the composer")
-
-        editor = _wait_for_editor(
-            driver,
-            _composer_editor_locators(),
-            timeout,
-            "the post editor",
-            exclude=composer,
-        )
+        editor = _open_post_composer(driver, composer, timeout, low, high, log)
         # Newer Facebook builds open a separate "Buat postingan baru" screen where
         # the field is not focused yet: tap it first, otherwise send_keys goes to
         # the page instead of the text field.
@@ -248,20 +250,31 @@ def create_post(
                 required=False,
             )
             if next_button is not None:
-                next_button.click()
+                _tap_element(driver, next_button, log)
                 _pause(low, high, log, "pressing Next")
             post_button = _wait_for_post_button(driver, timeout)
 
-        post_button.click()
+        if not _tap_element(driver, post_button, log):
+            raise FacebookAutomationError(
+                "the Post button was found but could not be tapped"
+            )
         _pause(low, high, log, "pressing Post")
 
         log.info("Facebook: post published")
         return PostResult(text, STATUS_POSTED, _element_text(post_button))
-    except FacebookAutomationError:
+    except FacebookAutomationError as exc:
+        # Keep the original message (tests and operators rely on it) but append
+        # the UI dump path so the next failed run can be diagnosed without
+        # guessing the locators.
+        artifacts = _capture_failure_artifacts(driver, "post", log)
+        if artifacts:
+            raise FacebookAutomationError(f"{exc} ({artifacts})") from exc
         raise
     except Exception as exc:
+        artifacts = _capture_failure_artifacts(driver, "post", log)
+        detail = f" ({artifacts})" if artifacts else ""
         raise FacebookAutomationError(
-            f"create_post failed on {package}: {exc}"
+            f"create_post failed on {package}: {exc}{detail}"
         ) from exc
 
 
@@ -621,6 +634,103 @@ def _element_signature(element: Any) -> Optional[Tuple[str, str]]:
     return (resource_id, bounds)
 
 
+def _element_key(element: Any) -> Optional[Tuple[str, ...]]:
+    """Return a stable key for *element* so it can be skipped reliably.
+
+    The Appium element id is preferred: two different nodes can share the same
+    ``resource-id`` and ``bounds`` (for example the feed composer pill and the
+    text field of the composer screen it opens), which made the old
+    ``resource-id``/``bounds`` comparison exclude the real post editor.
+    """
+
+    element_id = getattr(element, "id", None)
+    if isinstance(element_id, str) and element_id:
+        return ("id", element_id)
+    signature = _element_signature(element)
+    if signature is None:
+        return None
+    return ("signature",) + signature
+
+
+#: Placeholders used by the composer text field across Facebook builds/locales.
+_EDITOR_PLACEHOLDERS = (
+    "Apa yang Anda pikirkan",
+    "Apa yang ada di pikiran",
+    "What's on your mind",
+    "Tulis sesuatu",
+    "Tuliskan sesuatu",
+    "Bagikan sesuatu",
+    "Ceritakan sesuatu",
+    "Tulis postingan",
+    "Write something",
+    "Share something",
+)
+
+#: ``resource-id`` fragments that identify a composer text field.
+_EDITOR_RESOURCE_HINTS = (
+    "composer",
+    "post_text",
+    "status_edit",
+    "text_input",
+)
+
+
+def _is_editor_candidate(element: Any) -> bool:
+    """True when *element* looks like a field the post text can be typed into."""
+
+    try:
+        if not element.is_displayed():
+            return False
+        class_name = (element.get_attribute("class") or "").lower()
+        text = element.get_attribute("text") or ""
+        description = element.get_attribute("content-desc") or ""
+        resource_id = (element.get_attribute("resource-id") or "").lower()
+        clickable = element.get_attribute("clickable")
+        focusable = element.get_attribute("focusable")
+    except Exception:
+        return False
+
+    if "edittext" in class_name:
+        return True
+
+    tappable = any(
+        isinstance(flag, str) and flag.lower() == "true"
+        for flag in (clickable, focusable)
+    )
+    if any(hint in resource_id for hint in _EDITOR_RESOURCE_HINTS):
+        # Only an editable-looking class, never a clickable container whose
+        # resource-id happens to contain "composer".
+        return "edit" in class_name or "input" in class_name
+
+    haystack = f"{text}\n{description}".lower()
+    if not any(
+        placeholder.lower() in haystack for placeholder in _EDITOR_PLACEHOLDERS
+    ):
+        return False
+    # Views used as editors are tappable; plain labels (screen titles) are not.
+    return tappable
+
+
+def _looks_like_composer_field(element: Any) -> bool:
+    """True when *element* carries a composer placeholder or resource-id."""
+
+    try:
+        class_name = (element.get_attribute("class") or "").lower()
+        text = element.get_attribute("text") or ""
+        description = element.get_attribute("content-desc") or ""
+        resource_id = (element.get_attribute("resource-id") or "").lower()
+    except Exception:
+        return False
+    if "edittext" not in class_name:
+        return False
+    haystack = f"{text}\n{description}".lower()
+    if any(
+        placeholder.lower() in haystack for placeholder in _EDITOR_PLACEHOLDERS
+    ):
+        return True
+    return any(hint in resource_id for hint in _EDITOR_RESOURCE_HINTS)
+
+
 def _wait_for_editor(
     driver: Any,
     locators: Sequence[Locator],
@@ -628,6 +738,7 @@ def _wait_for_editor(
     description: str,
     *,
     exclude: Any = None,
+    required: bool = True,
 ) -> Any:
     """Wait for a text field that is *not* the composer prompt that was tapped.
 
@@ -637,7 +748,7 @@ def _wait_for_editor(
     the Post button.
     """
 
-    excluded = _element_signature(exclude) if exclude is not None else None
+    excluded_key = _element_key(exclude) if exclude is not None else None
     deadline = time.monotonic() + timeout
     while True:
         for by, value in locators:
@@ -646,19 +757,199 @@ def _wait_for_editor(
             except Exception:
                 continue
             for element in elements:
-                try:
-                    if not element.is_displayed():
-                        continue
-                except Exception:
+                if not _is_editor_candidate(element):
                     continue
-                if excluded is not None and _element_signature(element) == excluded:
+                if excluded_key is not None and _element_key(element) == excluded_key:
                     continue
                 return element
         if time.monotonic() >= deadline:
+            if not required:
+                return None
             raise FacebookAutomationError(
                 f"Timed out after {timeout:.0f}s waiting for {description}"
             )
         time.sleep(POLL_INTERVAL)
+
+
+def _open_post_composer(
+    driver: Any,
+    composer: Any,
+    timeout: float,
+    low: float,
+    high: float,
+    logger: logging.Logger,
+) -> Any:
+    """Tap the feed composer and return the field the post text goes into.
+
+    Facebook 588+ opens a separate "Buat postingan baru" screen. A previous
+    failed run can leave the app on that screen (or reopen it directly), in which
+    case the element found as "composer" *is* the post editor. That case is
+    recovered through the focused element, otherwise the editor would be tapped
+    and then excluded from the search, ending in ``Timed out ... waiting for the
+    post editor``.
+    """
+
+    _tap_element(driver, composer, logger)
+    _pause(low, high, logger, "opening the composer")
+
+    editor = _wait_for_editor(
+        driver,
+        _composer_editor_locators(),
+        min(timeout, EDITOR_FIRST_WAIT),
+        "the post editor",
+        exclude=composer,
+        required=False,
+    )
+    if editor is not None:
+        return editor
+
+    # The tapped element may already be the editor (composer screen was still
+    # open from a failed run, or the build focuses the field in place).
+    editor = _active_editor(driver, composer)
+    if editor is not None:
+        logger.info("Facebook: using the focused field as the post editor")
+        return editor
+
+    logger.info("Facebook: post editor not visible yet; tapping the composer again")
+    _tap_element(driver, composer, logger)
+    _pause(low, high, logger, "reopening the composer")
+
+    editor = _wait_for_editor(
+        driver,
+        _composer_editor_locators(),
+        timeout,
+        "the post editor",
+        exclude=composer,
+        required=False,
+    )
+    if editor is not None:
+        return editor
+
+    editor = _active_editor(driver, composer)
+    if editor is None and _is_editor_candidate(composer):
+        logger.warning(
+            "Facebook: falling back to the tapped composer field as the post editor"
+        )
+        editor = composer
+    if editor is None:
+        raise FacebookAutomationError(
+            f"Timed out after {timeout:.0f}s waiting for the post editor"
+        )
+    return editor
+
+
+def _active_editor(driver: Any, expected: Any = None) -> Any:
+    """Return the focused text field when it belongs to the composer.
+
+    The focused element is only trusted when it is the composer element that was
+    just tapped or when it carries a composer placeholder/resource-id; otherwise
+    a previously focused field (a comment box, the search bar) could receive the
+    post text.
+    """
+
+    switch_to = getattr(driver, "switch_to", None)
+    if switch_to is None:
+        return None
+    try:
+        element = switch_to.active_element
+    except Exception:
+        return None
+    if element is None or not _is_editor_candidate(element):
+        return None
+    if expected is not None and _element_key(element) == _element_key(expected):
+        return element
+    if _looks_like_composer_field(element):
+        return element
+    return None
+
+
+def _tap_element(driver: Any, element: Any, logger: logging.Logger) -> bool:
+    """Tap *element*, falling back to a centre-of-bounds gesture."""
+
+    try:
+        element.click()
+        return True
+    except Exception:
+        logger.debug("element.click() failed; trying a coordinate tap", exc_info=True)
+
+    try:
+        location = element.location
+        size = element.size
+        x = int(location["x"] + size["width"] / 2)
+        y = int(location["y"] + size["height"] / 2)
+    except Exception:
+        return False
+
+    execute = getattr(driver, "execute_script", None)
+    if callable(execute):
+        try:
+            execute("mobile: clickGesture", {"x": x, "y": y})
+            return True
+        except Exception:
+            logger.debug("mobile: clickGesture failed", exc_info=True)
+
+    tap = getattr(driver, "tap", None)
+    if callable(tap):
+        try:
+            tap([(x, y)])
+            return True
+        except Exception:
+            logger.debug("driver.tap failed", exc_info=True)
+    return False
+
+
+def _capture_failure_artifacts(
+    driver: Any, action: str, logger: logging.Logger
+) -> str:
+    """Save the page source and screenshot of a failed step.
+
+    Returns a short ``UI dump: <paths>`` note to append to the raised error so the
+    operator can send the files without re-running the flow. The target directory
+    can be overridden with ``GADS_UI_DUMP_DIR``; it defaults to
+    ``<tempdir>/gads-social-media-bot``.
+    """
+
+    configured = os.environ.get("GADS_UI_DUMP_DIR")
+    try:
+        directory = (
+            Path(configured)
+            if configured
+            else Path(tempfile.gettempdir()) / "gads-social-media-bot"
+        )
+        directory.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        logger.debug("Could not prepare the artifact directory", exc_info=True)
+        return ""
+
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    saved: List[str] = []
+
+    source = None
+    try:
+        source = driver.page_source
+    except Exception:
+        # A dead Appium session must not hide the original failure.
+        logger.debug("Could not read the page source", exc_info=True)
+    if isinstance(source, str) and source:
+        path = directory / f"facebook-{action}-{stamp}.xml"
+        try:
+            path.write_text(source, encoding="utf-8")
+            saved.append(str(path))
+        except Exception:
+            logger.debug("Could not save the page source", exc_info=True)
+
+    screenshot = getattr(driver, "get_screenshot_as_png", None)
+    if callable(screenshot):
+        path = directory / f"facebook-{action}-{stamp}.png"
+        try:
+            path.write_bytes(screenshot())
+            saved.append(str(path))
+        except Exception:
+            logger.debug("Could not save the screenshot", exc_info=True)
+
+    if not saved:
+        return ""
+    return "UI dump: " + ", ".join(saved)
 
 
 def _wait_for_result(driver: Any, username: str, timeout: float) -> Any:
@@ -724,7 +1015,7 @@ def _wait_for_follow_state(
         time.sleep(POLL_INTERVAL)
 
 
-def _matches_button(element: Any) -> bool:
+def _matches_button(element: Any, *, strict: bool = True) -> bool:
     """True when *element* is a visible, enabled, non-EditText button."""
 
     try:
@@ -733,27 +1024,37 @@ def _matches_button(element: Any) -> bool:
         class_name = (element.get_attribute("class") or "").lower()
         clickable = element.get_attribute("clickable")
         enabled = element.get_attribute("enabled")
+        text = element.get_attribute("text") or ""
+        description = element.get_attribute("content-desc") or ""
     except Exception:
         return False
     # Never mistake the composer EditText for a button, even when the post text
     # itself is "Post".
     if "edittext" in class_name:
         return False
-    for flag in (clickable, enabled):
-        if isinstance(flag, str) and flag.lower() == "false":
-            return False
+    # "Postingan baru" is the composer screen title, never the submit button.
+    if f"{text} {description}".strip().lower().startswith("postingan"):
+        return False
+    if isinstance(enabled, str) and enabled.lower() == "false":
+        return False
+    # Many Facebook toolbars wrap the label in a non-clickable TextView whose
+    # parent handles the tap. The relaxed pass accepts those and `_tap_element`
+    # taps their centre, so the flow does not time out on such builds.
+    if strict and isinstance(clickable, str) and clickable.lower() == "false":
+        return False
     return True
 
 
 def _find_button(driver: Any, locators: Sequence[Locator]) -> Any:
-    for by, value in locators:
-        try:
-            elements = driver.find_elements(by, value)
-        except Exception:
-            continue
-        for element in elements:
-            if _matches_button(element):
-                return element
+    for strict in (True, False):
+        for by, value in locators:
+            try:
+                elements = driver.find_elements(by, value)
+            except Exception:
+                continue
+            for element in elements:
+                if _matches_button(element, strict=strict):
+                    return element
     return None
 
 
@@ -924,7 +1225,7 @@ def _composer_prompt_locators() -> List[Locator]:
 
 
 def _composer_editor_locators() -> List[Locator]:
-    return [
+    locators: List[Locator] = [
         (BY_CLASS_NAME, "android.widget.EditText"),
         (BY_XPATH, "//android.widget.EditText"),
         # Newer composers may expose the field as a view whose text/content-desc
@@ -942,6 +1243,27 @@ def _composer_editor_locators() -> List[Locator]:
             'new UiSelector().textContains("What\'s on your mind")',
         ),
     ]
+    # Extra placeholders and resource-ids used by newer composer builds.
+    for placeholder in _EDITOR_PLACEHOLDERS:
+        escaped = _escape_uiautomator(placeholder)
+        locators.append(
+            (BY_ANDROID_UIAUTOMATOR, f'new UiSelector().textContains("{escaped}")')
+        )
+        locators.append(
+            (
+                BY_ANDROID_UIAUTOMATOR,
+                f'new UiSelector().descriptionContains("{escaped}")',
+            )
+        )
+    for hint in _EDITOR_RESOURCE_HINTS:
+        escaped = _escape_uiautomator(hint)
+        locators.append(
+            (
+                BY_ANDROID_UIAUTOMATOR,
+                f'new UiSelector().resourceIdMatches(".*{escaped}.*")',
+            )
+        )
+    return locators
 
 
 #: Labels used by the final submit button across Facebook builds/locales.
@@ -954,6 +1276,19 @@ def _post_button_locators() -> List[Locator]:
         locators.append((BY_XPATH, f'//*[@text="{label}"]'))
         locators.append((BY_ACCESSIBILITY_ID, label))
     # Wrapped labels such as "Bagikan sekarang" / "Posting sebagai …".
+    for label in ("Posting", "Bagikan", "Kirim", "Share"):
+        locators.append(
+            (
+                BY_ANDROID_UIAUTOMATOR,
+                f'new UiSelector().textStartsWith("{label}")',
+            )
+        )
+        locators.append(
+            (
+                BY_ANDROID_UIAUTOMATOR,
+                f'new UiSelector().descriptionStartsWith("{label}")',
+            )
+        )
     for label in ("Bagikan", "Kirim", "Share"):
         locators.append(
             (
