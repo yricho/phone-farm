@@ -3,13 +3,12 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#12100e">
+  <meta name="theme-color" content="#070a0d">
   <title>SocialMediaBot · Phone Farm Dashboard</title>
   <script>
     (() => {
       const key = "gads.theme"; /* Keep in sync with THEME_KEY in app.js. */
-      const fallback = matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
-      let theme = fallback;
+      let theme = "dark";
       try {
         const saved = localStorage.getItem(key);
         if (saved === "light" || saved === "dark") theme = saved;
@@ -17,8 +16,6 @@
         /* localStorage can be unavailable in private mode */
       }
       document.documentElement.dataset.theme = theme;
-      const meta = document.querySelector('meta[name="theme-color"]');
-      if (meta) meta.content = theme === "light" ? "#f4efe6" : "#12100e";
     })();
   </script>
   <link rel="stylesheet" href="/static/styles.css">
@@ -65,6 +62,9 @@
     </symbol>
     <symbol id="icon-chevron-right" viewBox="0 0 24 24">
       <path d="m9 18 6-6-6-6"></path>
+    </symbol>
+    <symbol id="icon-chevron-down" viewBox="0 0 24 24">
+      <path d="m6 9 6 6 6-6"></path>
     </symbol>
     <symbol id="icon-scan" viewBox="0 0 24 24">
       <path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"></path>
@@ -119,30 +119,57 @@
       <rect x="3.5" y="13.5" width="7" height="7" rx="1.5"></rect>
       <rect x="13.5" y="13.5" width="7" height="7" rx="1.5"></rect>
     </symbol>
+    <symbol id="icon-camera" viewBox="0 0 24 24">
+      <path d="M4 8h3l1.6-2.5h6.8L17 8h3v11H4V8Z"></path>
+      <circle cx="12" cy="13.2" r="3.2"></circle>
+    </symbol>
+    <symbol id="icon-terminal" viewBox="0 0 24 24">
+      <rect x="3" y="4" width="18" height="16" rx="2.5"></rect>
+      <path d="m7 9 3 3-3 3M13.5 15H17"></path>
+    </symbol>
+    <symbol id="icon-info" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="9"></circle>
+      <path d="M12 11v5M12 7.8h.01"></path>
+    </symbol>
+    <symbol id="icon-heart" viewBox="0 0 24 24">
+      <path d="M12 20.5 4.7 13a4.8 4.8 0 0 1 6.8-6.8l.5.5.5-.5a4.8 4.8 0 0 1 6.8 6.8L12 20.5Z"></path>
+    </symbol>
+    <symbol id="icon-layers" viewBox="0 0 24 24">
+      <path d="m12 3 9 5-9 5-9-5 9-5Z"></path>
+      <path d="m3 13 9 5 9-5"></path>
+      <path d="m3 17 9 5 9-5"></path>
+    </symbol>
   </svg>
-
   <header class="topbar">
     <div class="brand">
       <span class="brand-mark" aria-hidden="true">
         <svg viewBox="0 0 24 24" focusable="false">
-          <rect x="5.5" y="2.5" width="9" height="19" rx="2.2"></rect>
-          <path d="M8.5 6h3M8.5 18.5h3"></path>
-          <path d="M17.5 8a6 6 0 0 1 0 8M20.5 5a10 10 0 0 1 0 14"></path>
+          <rect x="6" y="2.5" width="8.5" height="19" rx="2.2"></rect>
+          <path d="M8.8 6h2.9M8.8 18.5h2.9"></path>
+          <path d="M17.2 8a6 6 0 0 1 0 8M20 5.4a10 10 0 0 1 0 13.2"></path>
         </svg>
       </span>
       <div class="brand-text">
-        <h1>Phone Farm <span>Dashboard</span></h1>
+        <h1>
+          Phone Farm <span>Dashboard</span>
+          <span class="rack-version">RACK V2.4</span>
+        </h1>
         <p>
           <span id="rack-name">—</span>
-          <span class="dot-sep">·</span>
+          <span class="dot-sep">•</span>
           <span id="rack-host">—</span>
-          <span class="dot-sep">·</span>
-          <span id="rack-size">0</span> HP
+          <span class="dot-sep">•</span>
+          <span><span id="rack-size">0</span> HP</span>
+          <span class="dot-sep">•</span>
+          <span id="rack-online">0 terhubung</span>
         </p>
       </div>
     </div>
-    <div class="topbar-actions">
+    <div class="topbar-status" aria-label="Status koneksi">
       <span id="conn-pill" class="pill pill-muted">0/0 terhubung</span>
+      <span class="pill pill-fps"><span class="fps-dot" aria-hidden="true"></span>60 FPS</span>
+    </div>
+    <div class="topbar-actions">
       <button id="btn-connect" class="btn btn-primary" type="button">
         <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-plug"></use></svg>
         <span>Connect all</span>
@@ -153,7 +180,7 @@
       </button>
       <button id="btn-close-apps" class="btn btn-ghost" type="button"
               title="Tutup Facebook/Instagram/Threads/X/TikTok di semua HP yang terhubung">
-        <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-apps"></use></svg>
+        <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-x"></use></svg>
         <span>Close apps</span>
       </button>
       <button id="btn-theme" class="btn btn-ghost theme-toggle" type="button"
@@ -166,9 +193,11 @@
           <path d="M20.5 14.5A8.5 8.5 0 0 1 9.5 3.5 7 7 0 1 0 20.5 14.5Z"></path>
         </svg>
       </button>
-      <button id="btn-refresh" class="btn btn-ghost" type="button" title="Refresh sekarang" aria-label="Refresh">
+      <button id="btn-refresh" class="btn btn-ghost btn-icon-only" type="button"
+              title="Refresh sekarang" aria-label="Refresh">
         <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-refresh"></use></svg>
       </button>
+      <span class="avatar" aria-hidden="true">AD</span>
     </div>
   </header>
 
@@ -197,478 +226,540 @@
     </section>
 
     <div class="workspace">
-    <section id="screen-panel" class="panel live-panel"
-             aria-labelledby="screen-panel-title">
-      <header class="panel-header live-header">
-        <div class="live-heading">
-          <h2 id="screen-panel-title">Live screen</h2>
-          <p id="screen-panel-subtitle" class="muted">Pilih device untuk mulai</p>
-        </div>
-        <div class="panel-tools">
-          <span id="screen-panel-status" class="pill pill-muted">—</span>
-          <span id="screen-resolution" class="screen-resolution">—</span>
-          <label class="screen-size-control" for="screen-size">
-            <span>Ukuran</span>
-            <select id="screen-size" aria-label="Ukuran live screen">
-              <option value="fit">Fit</option>
-              <option value="compact">Kecil</option>
-              <option value="medium">Sedang</option>
-              <option value="large">Besar</option>
-              <option value="actual">1:1 asli</option>
-            </select>
-          </label>
-          <button id="screen-panel-retry" class="btn btn-ghost btn-small"
-                  type="button" disabled>
-            <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-refresh"></use></svg>
-            <span>Coba lagi</span>
-          </button>
-          <button id="screen-panel-close" class="btn btn-ghost btn-small"
-                  type="button">
-            <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-stop"></use></svg>
-            <span>Stop</span>
-          </button>
-        </div>
-      </header>
-      <div class="live-body">
-        <div class="screen-frame live-frame">
-          <img id="screen-panel-img" alt="Live screen device" hidden>
-          <div id="screen-panel-empty" class="screen-empty">
-            Pilih device dari daftar di bawah.
-          </div>
-        </div>
-        <aside class="live-side">
-          <div class="live-meta">
-            <div class="meta-item">
-              <span>Slot</span><strong id="screen-panel-slot">—</strong>
+      <div class="workspace-main">
+        <section id="screen-panel" class="panel live-panel"
+                 aria-labelledby="screen-panel-title">
+          <header class="panel-header live-header">
+            <div class="live-ident">
+              <span id="screen-panel-status" class="pill pill-muted">Standby</span>
+              <h2 id="screen-panel-title">Live screen</h2>
+              <p id="screen-panel-subtitle" class="live-subtitle">Pilih device untuk mulai</p>
             </div>
-            <div class="meta-item">
-              <span>Device</span><strong id="screen-panel-device">—</strong>
-            </div>
-            <div class="meta-item">
-              <span>Session</span><strong id="screen-panel-session">—</strong>
-            </div>
-            <div class="meta-item">
-              <span>Port</span><strong id="screen-panel-port">—</strong>
-            </div>
-          </div>
-          <div class="screen-controls live-controls">
-            <div class="screen-keys">
-              <button id="screen-back" class="btn btn-ghost btn-small"
+            <div class="panel-tools">
+              <span id="screen-resolution" class="tool-readout">—</span>
+              <label class="screen-size-control" for="screen-size">
+                <span>Ukuran:</span>
+                <select id="screen-size" aria-label="Ukuran live screen">
+                  <option value="fit">Fit (Penuh)</option>
+                  <option value="compact">Kecil</option>
+                  <option value="medium">Sedang</option>
+                  <option value="large">Besar</option>
+                  <option value="actual">1:1 asli</option>
+                </select>
+              </label>
+              <button id="screen-snapshot" class="btn btn-ghost btn-icon-only"
+                      type="button" title="Simpan snapshot layar"
+                      aria-label="Simpan snapshot layar">
+                <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-camera"></use></svg>
+              </button>
+              <button id="screen-panel-retry" class="btn btn-ghost btn-small"
+                      type="button" disabled>
+                <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-refresh"></use></svg>
+                <span>Coba lagi</span>
+              </button>
+              <button id="screen-panel-close" class="btn btn-ghost btn-small"
                       type="button">
-                <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-arrow-left"></use></svg>
-                <span>Back</span>
+                <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-stop"></use></svg>
+                <span>Stop</span>
               </button>
-              <button id="screen-home" class="btn btn-ghost btn-small"
-                      type="button">
-                <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-home"></use></svg>
-                <span>Home</span>
-              </button>
-              <button id="screen-enter" class="btn btn-ghost btn-small"
-                      type="button">
-                <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-corner-down-left"></use></svg>
-                <span>Enter</span>
-              </button>
-              <button id="screen-mute" class="btn btn-ghost btn-small"
-                      type="button" aria-pressed="false" disabled
-                      title="Mute / unmute suara HP">
-                <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-volume"></use></svg>
-                <span>Mute</span>
-              </button>
-              <button id="screen-close-apps" class="btn btn-ghost btn-small"
+            </div>
+          </header>
+          <div class="live-body">
+            <div class="live-screen-col">
+              <div class="phone-shell">
+                <span class="phone-notch" aria-hidden="true"></span>
+                <div class="phone-screen screen-frame live-frame">
+                  <img id="screen-panel-img" alt="Live screen device" hidden>
+                  <div id="screen-panel-empty" class="screen-empty">
+                    Pilih device dari daftar di bawah.
+                  </div>
+                </div>
+              </div>
+              <div class="phone-caption">
+                <span class="caption-dot" aria-hidden="true"></span>
+                <span id="screen-input-status">Klik = tap · drag = swipe</span>
+              </div>
+            </div>
+            <aside class="live-side">
+              <div class="live-meta">
+                <div class="meta-item">
+                  <span class="meta-label">Slot</span>
+                  <strong id="screen-panel-slot" class="meta-value">—</strong>
+                </div>
+                <div class="meta-item">
+                  <span class="meta-label">Device</span>
+                  <strong id="screen-panel-device" class="meta-value">—</strong>
+                </div>
+                <div class="meta-item">
+                  <span class="meta-label">Session</span>
+                  <strong id="screen-panel-session" class="meta-value">—</strong>
+                </div>
+                <div class="meta-item">
+                  <span class="meta-label">Port</span>
+                  <strong id="screen-panel-port" class="meta-value meta-accent">—</strong>
+                </div>
+              </div>
+              <div class="control-section">
+                <div class="section-head">
+                  <span>Navigasi fisik HP</span>
+                </div>
+                <div class="screen-keys">
+                  <button id="screen-back" class="btn btn-ghost btn-small" type="button">
+                    <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-arrow-left"></use></svg>
+                    <span>Back</span>
+                  </button>
+                  <button id="screen-home" class="btn btn-ghost btn-small" type="button">
+                    <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-home"></use></svg>
+                    <span>Home</span>
+                  </button>
+                  <button id="screen-enter" class="btn btn-ghost btn-small" type="button">
+                    <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-corner-down-left"></use></svg>
+                    <span>Enter</span>
+                  </button>
+                  <button id="screen-mute" class="btn btn-ghost btn-small"
+                          type="button" aria-pressed="false" disabled
+                          title="Mute / unmute suara HP">
+                    <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-volume"></use></svg>
+                    <span>Mute</span>
+                  </button>
+                </div>
+              </div>
+
+              <button id="screen-close-apps" class="btn btn-ghost btn-block screen-close"
                       type="button" disabled
                       title="Tutup aplikasi platform di HP ini">
-                <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-apps"></use></svg>
-                <span>Close apps</span>
+                <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-x"></use></svg>
+                <span>Close apps di HP ini</span>
               </button>
-            </div>
-            <div class="screen-text-row">
-              <input id="screen-text" type="text" placeholder="Ketik teks ke HP…"
-                     autocomplete="off" spellcheck="false">
-              <button id="screen-send-text" class="btn btn-small btn-primary"
-                      type="button">
-                <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-send"></use></svg>
-                <span>Kirim</span>
-              </button>
-            </div>
-            <p id="screen-input-status" class="muted">
-              Klik = tap · drag = swipe
-            </p>
-          </div>
-          <p class="live-help muted">
-            Klik gambar = tap · drag = swipe · teks dikirim ke field yang sedang
-            fokus di HP.
-          </p>
-        </aside>
-      </div>
-      <div class="live-strip">
-        <div class="live-strip-top">
-          <span class="live-strip-label">Pilih device</span>
-          <span id="live-strip-count" class="muted">0 slot</span>
-          <div class="live-strip-nav">
-            <button id="live-strip-prev" class="btn btn-ghost btn-small"
-                    type="button" aria-label="Geser daftar device ke kiri">
-              <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-chevron-left"></use></svg>
-            </button>
-            <button id="live-strip-next" class="btn btn-ghost btn-small"
-                    type="button" aria-label="Geser daftar device ke kanan">
-              <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-chevron-right"></use></svg>
-            </button>
-          </div>
-        </div>
-        <div id="live-device-list" class="live-device-list"
-             aria-label="Daftar device untuk live"></div>
-      </div>
-    </section>
 
-    <section class="panel control-panel"
-             aria-label="Kontrol aksi, jobs, dan activity">
-      <header class="panel-header">
-        <h2>Control</h2>
-        <span class="muted">setup · actions · jobs · logs</span>
-      </header>
-      <div class="accordion" id="control-accordion">
-        <section class="accordion-item is-open">
-          <button id="accordion-setup" class="accordion-toggle" type="button"
-                  aria-expanded="true" aria-controls="accordion-setup-body">
-            <span class="accordion-glyph" aria-hidden="true">
-              <svg viewBox="0 0 24 24" focusable="false">
-                <rect x="3.5" y="3.5" width="17" height="4.8" rx="1.3"></rect>
-                <rect x="3.5" y="9.6" width="17" height="4.8" rx="1.3"></rect>
-                <rect x="3.5" y="15.7" width="17" height="4.8" rx="1.3"></rect>
-                <path d="M6.5 5.9h.01M6.5 12h.01M6.5 18.1h.01"></path>
-                <path d="M14.5 5.9h3.5M14.5 12h3.5M14.5 18.1h3.5"></path>
-              </svg>
-            </span>
-            <span class="accordion-title">Setup rack</span>
-            <span id="setup-summary" class="accordion-meta">0 device</span>
-            <span class="accordion-icon" aria-hidden="true">⌄</span>
-          </button>
-          <div id="accordion-setup-body" class="accordion-body"
-               role="region" aria-labelledby="accordion-setup">
-            <div class="rack-setup">
-              <p class="setup-intro">
-                Colokkan HP, klik <strong>Scan ADB</strong>, lalu
-                <strong>Simpan &amp; terapkan</strong>. Tidak perlu mengedit JSON.
-                Scan memakai adb di komputer tempat dashboard berjalan.
-              </p>
-              <div class="setup-grid">
-                <label for="setup-rack-name">Nama rack
-                  <input id="setup-rack-name" type="text" value="rack-01"
-                         autocomplete="off">
-                </label>
-                <label for="setup-host">Appium host
-                  <input id="setup-host" type="text" value="127.0.0.1"
+              <div class="control-section">
+                <div class="section-head">
+                  <span>Input teks ADB cepat</span>
+                  <span class="section-note">Fokus pada field HP</span>
+                </div>
+                <div class="screen-text-row">
+                  <input id="screen-text" type="text" placeholder="Ketik teks ke HP…"
                          autocomplete="off" spellcheck="false">
-                </label>
+                  <button id="screen-send-text" class="btn btn-small btn-primary"
+                          type="button">
+                    <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-send"></use></svg>
+                    <span>Kirim</span>
+                  </button>
+                </div>
               </div>
-              <div class="setup-toolbar">
-                <button id="setup-scan" class="btn btn-ghost btn-small"
-                        type="button">
-                  <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-scan"></use></svg>
-                  <span>Scan ADB</span>
-                </button>
-                <button id="setup-add" class="btn btn-ghost btn-small"
-                        type="button">
-                  <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-plus"></use></svg>
-                  <span>Tambah device</span>
-                </button>
-                <button id="setup-save" class="btn btn-primary btn-small"
-                        type="button">
-                  <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-save"></use></svg>
-                  <span>Simpan &amp; terapkan</span>
-                </button>
+
+              <div class="live-note">
+                <svg class="live-note-icon" aria-hidden="true" focusable="false"><use href="#icon-info"></use></svg>
+                <p>
+                  Klik layar untuk tap, geser untuk swipe. Teks yang Anda kirim
+                  otomatis diinjeksi ke input teks yang aktif di HP.
+                </p>
               </div>
-              <div class="setup-device-head" aria-hidden="true">
-                <span>Slot</span><span>UDID / serial</span><span>Port</span><span></span>
-              </div>
-              <div id="setup-devices" class="setup-devices"></div>
-              <p id="setup-hint" class="hint">
-                Disconnect semua device sebelum mengubah konfigurasi. Pastikan
-                Appium sudah berjalan di host/port yang dipakai.
-              </p>
-            </div>
+            </aside>
           </div>
         </section>
-
-        <section class="accordion-item">
-          <button id="accordion-action" class="accordion-toggle" type="button"
-                  aria-expanded="false" aria-controls="accordion-action-body">
-            <span class="accordion-glyph" aria-hidden="true">
-              <svg viewBox="0 0 24 24" focusable="false">
-                <rect x="3.5" y="3.5" width="17" height="17" rx="3"></rect>
-                <path d="M9.5 8.2v7.6l6.5-3.8-6.5-3.8Z"></path>
-              </svg>
-            </span>
-            <span class="accordion-title">Run action</span>
-            <span class="accordion-meta">follow · post · comment</span>
-            <span class="accordion-icon" aria-hidden="true">⌄</span>
-          </button>
-          <div id="accordion-action-body" class="accordion-body" hidden
-               role="region" aria-labelledby="accordion-action">
-            <form id="action-form" class="action-form">
-            <label for="platform-select">Platform</label>
-            <select id="platform-select"></select>
-            <p id="platform-note" class="platform-note"></p>
-
-            <div class="mode-toggle" role="group" aria-label="Mode eksekusi">
-              <button id="mode-single" class="btn btn-small is-active" type="button">
-                <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-single"></use></svg>
-                <span>Single</span>
+        <section class="panel device-panel" aria-labelledby="device-panel-title">
+          <header class="panel-header device-header">
+            <div class="device-heading">
+              <h2 id="device-panel-title">Pilih device</h2>
+              <span id="live-strip-count" class="count-chip">0 slot · 0 online</span>
+            </div>
+            <div class="live-strip-nav">
+              <button id="live-strip-prev" class="btn btn-ghost btn-small"
+                      type="button" aria-label="Geser daftar device ke kiri">
+                <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-chevron-left"></use></svg>
               </button>
-              <button id="mode-bulk" class="btn btn-small" type="button">
-                <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-bulk"></use></svg>
-                <span>Bulk</span>
+              <button id="live-strip-next" class="btn btn-ghost btn-small"
+                      type="button" aria-label="Geser daftar device ke kanan">
+                <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-chevron-right"></use></svg>
               </button>
             </div>
-
-            <label for="action-select">Action</label>
-            <select id="action-select">
-              <option value="follow">Follow user</option>
-              <option value="post">Create post</option>
-              <option value="comment">Comment on post</option>
-              <option value="like">Like post</option>
-              <option value="save">Save / bookmark post</option>
-              <option value="reply">Reply to post</option>
-            </select>
-
-            <label for="target-select">Target</label>
-            <select id="target-select">
-              <option value="all">All connected devices</option>
-            </select>
-
-            <label for="action-schedule">Jadwal (opsional)</label>
-            <input id="action-schedule" type="datetime-local">
-            <p class="hint">Kosongkan untuk menjalankan sekarang.</p>
-
-            <div id="bulk-fields" class="field" hidden>
-              <label for="bulk-items">Items (satu per baris)</label>
-              <textarea id="bulk-items" rows="6"
-                        placeholder="Satu item per baris"></textarea>
-              <div class="bulk-options">
-                <label for="bulk-interval">Jeda antar item (detik)</label>
-                <input id="bulk-interval" type="number" min="0" max="300"
-                       step="0.5" value="0">
-                <label for="bulk-retries">Retry item gagal</label>
-                <input id="bulk-retries" type="number" min="0" max="5"
-                       step="1" value="0">
-              </div>
-              <label class="file-import" for="bulk-file">
-                Import file (.txt/.csv)
-                <input id="bulk-file" type="file"
-                       accept=".txt,.csv,text/plain,text/csv">
-              </label>
-              <p id="bulk-hint" class="hint">Satu username per baris.</p>
-            </div>
-
-            <div id="field-username-wrap" class="field">
-              <label for="field-username">Username</label>
-              <input id="field-username" type="text" placeholder="target.account"
-                     autocomplete="off" spellcheck="false">
-            </div>
-
-            <div id="field-url-wrap" class="field" hidden>
-              <label for="field-url">Post URL</label>
-              <input id="field-url" type="url"
-                     placeholder="https://www.facebook.com/... atau fb://post/123">
-            </div>
-
-            <div id="field-text-wrap" class="field">
-              <label for="field-text" id="field-text-label">Text</label>
-              <textarea id="field-text" rows="4" placeholder="Tulis teks…"></textarea>
-            </div>
-
-            <button id="action-submit" class="btn btn-primary btn-block" type="submit">
-              <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-play"></use></svg>
-              <span>Jalankan</span>
+          </header>
+          <div class="device-scroller">
+            <div id="live-device-list" class="live-device-list"
+                 aria-label="Daftar device untuk live"></div>
+            <button id="device-add-card" class="live-device-add" type="button">
+              <span class="live-device-add-icon" aria-hidden="true">
+                <svg class="btn-icon" focusable="false"><use href="#icon-plus"></use></svg>
+              </span>
+              <span>Tambah Slot Baru</span>
             </button>
-            <p id="action-hint" class="hint">
-              Aksi berjalan di background; pantau panel Activity.
-            </p>
-          </form>
-          </div>
-        </section>
-
-        <section class="accordion-item">
-          <button id="accordion-campaign" class="accordion-toggle" type="button"
-                  aria-expanded="false" aria-controls="accordion-campaign-body">
-            <span class="accordion-glyph" aria-hidden="true">
-              <svg viewBox="0 0 24 24" focusable="false">
-                <path d="M21 3 10.5 13.5"></path>
-                <path d="M21 3 14.5 21l-4-8-8-4L21 3Z"></path>
-              </svg>
-            </span>
-            <span class="accordion-title">Campaign</span>
-            <span class="accordion-meta">post ke beberapa platform</span>
-            <span class="accordion-icon" aria-hidden="true">⌄</span>
-          </button>
-          <div id="accordion-campaign-body" class="accordion-body" hidden
-               role="region" aria-labelledby="accordion-campaign">
-            <div class="campaign-form">
-              <label for="campaign-text">Teks post</label>
-              <textarea id="campaign-text" rows="4"
-                        placeholder="Teks yang dikirim ke semua platform terpilih…"></textarea>
-
-              <label for="campaign-target">Target</label>
-              <select id="campaign-target">
-                <option value="all">All connected devices</option>
-              </select>
-
-              <span class="campaign-label">Platform tujuan</span>
-              <div id="campaign-platforms" class="campaign-platforms"></div>
-
-              <label for="campaign-interval">Jeda antar platform (detik)</label>
-              <input id="campaign-interval" type="number" min="0" max="300"
-                     step="0.5" value="5">
-
-              <label for="campaign-schedule">Jadwal (opsional)</label>
-              <input id="campaign-schedule" type="datetime-local">
-
-              <button id="campaign-submit" class="btn btn-primary btn-block"
-                      type="button">
-                <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-send"></use></svg>
-                <span>Jalankan campaign</span>
-              </button>
-              <p id="campaign-hint" class="hint">
-                Hanya platform yang mendukung text post yang bisa dipilih.
-              </p>
-            </div>
-          </div>
-        </section>
-
-        <section class="accordion-item">
-          <button id="accordion-automation" class="accordion-toggle" type="button"
-                  aria-expanded="false" aria-controls="accordion-automation-body">
-            <span class="accordion-glyph" aria-hidden="true">
-              <svg viewBox="0 0 24 24" focusable="false">
-                <path d="M13 2 4.5 13.5H11l-1 8.5L19.5 10H13l1-8Z"></path>
-              </svg>
-            </span>
-            <span class="accordion-title">Automation</span>
-            <span class="accordion-meta">limits · health · analytics</span>
-            <span class="accordion-icon" aria-hidden="true">⌄</span>
-          </button>
-          <div id="accordion-automation-body" class="accordion-body" hidden
-               role="region" aria-labelledby="accordion-automation">
-            <div class="automation-form">
-              <p class="setup-intro">
-                Batas harian dihitung per device dan per platform. Isi
-                <strong>0</strong> untuk memblokir aksi tersebut.
-              </p>
-              <div class="limit-grid">
-                <label for="limit-follow">Follow
-                  <input id="limit-follow" type="number" min="0" max="10000">
-                </label>
-                <label for="limit-post">Post
-                  <input id="limit-post" type="number" min="0" max="10000">
-                </label>
-                <label for="limit-comment">Comment
-                  <input id="limit-comment" type="number" min="0" max="10000">
-                </label>
-                <label for="limit-like">Like
-                  <input id="limit-like" type="number" min="0" max="10000">
-                </label>
-                <label for="limit-save">Save
-                  <input id="limit-save" type="number" min="0" max="10000">
-                </label>
-                <label for="limit-reply">Reply
-                  <input id="limit-reply" type="number" min="0" max="10000">
-                </label>
-              </div>
-              <div class="setup-toolbar">
-                <button id="limits-save" class="btn btn-primary btn-small"
-                        type="button">
-                  <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-save"></use></svg>
-                  <span>Simpan batas</span>
-                </button>
-                <button id="limits-reset" class="btn btn-ghost btn-small"
-                        type="button" title="Reset pemakaian limit hari ini">
-                  <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-refresh"></use></svg>
-                  <span>Reset limit</span>
-                </button>
-                <button id="health-check" class="btn btn-ghost btn-small"
-                        type="button">
-                  <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-activity"></use></svg>
-                  <span>Health check</span>
-                </button>
-                <button id="notify-enable" class="btn btn-ghost btn-small"
-                        type="button">
-                  <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-bell"></use></svg>
-                  <span>Aktifkan notifikasi</span>
-                </button>
-              </div>
-              <div class="analytics-summary">
-                <span>Hari ini</span>
-                <strong id="analytics-ok">0</strong> ok
-                <strong id="analytics-failed">0</strong> gagal
-              </div>
-              <div id="analytics-detail" class="analytics-detail"></div>
-              <p id="automation-hint" class="hint">
-                Health check memeriksa apakah Appium masih bisa mengakses device.
-              </p>
-            </div>
-          </div>
-        </section>
-
-        <section class="accordion-item">
-          <button id="accordion-jobs" class="accordion-toggle" type="button"
-                  aria-expanded="false" aria-controls="accordion-jobs-body">
-            <span class="accordion-glyph" aria-hidden="true">
-              <svg viewBox="0 0 24 24" focusable="false">
-                <path d="M8 6h12M8 12h12M8 18h12"></path>
-                <path d="M4 6h.01M4 12h.01M4 18h.01"></path>
-              </svg>
-            </span>
-            <span class="accordion-title">Jobs</span>
-            <span class="accordion-meta">10 terakhir</span>
-            <span class="accordion-icon" aria-hidden="true">⌄</span>
-          </button>
-          <div id="accordion-jobs-body" class="accordion-body" hidden
-               role="region" aria-labelledby="accordion-jobs">
-            <ul id="jobs-list" class="jobs">
-              <li class="empty">Belum ada job.</li>
-            </ul>
-          </div>
-        </section>
-
-        <section class="accordion-item">
-          <button id="accordion-activity" class="accordion-toggle" type="button"
-                  aria-expanded="false" aria-controls="accordion-activity-body">
-            <span class="accordion-glyph" aria-hidden="true">
-              <svg viewBox="0 0 24 24" focusable="false">
-                <path d="M2.5 12h4l2.5-6 4 12 2.5-6h6"></path>
-              </svg>
-            </span>
-            <span class="accordion-title">Activity</span>
-            <span class="accordion-meta">real-time log</span>
-            <span class="accordion-icon" aria-hidden="true">⌄</span>
-          </button>
-          <div id="accordion-activity-body" class="accordion-body" hidden
-               role="region" aria-labelledby="accordion-activity">
-            <div class="accordion-tools">
-              <button id="log-pause" class="btn btn-ghost btn-small" type="button"
-                      data-paused="false">
-                <svg class="btn-icon" data-icon="pause" aria-hidden="true" focusable="false"><use href="#icon-pause"></use></svg>
-                <svg class="btn-icon" data-icon="play" aria-hidden="true" focusable="false"><use href="#icon-play"></use></svg>
-                <span id="log-pause-label">Pause</span>
-              </button>
-              <button id="log-clear" class="btn btn-ghost btn-small" type="button">
-                <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-trash"></use></svg>
-                <span>Clear</span>
-              </button>
-            </div>
-            <ul id="logs-list" class="logs">
-              <li class="empty">Menunggu aktivitas…</li>
-            </ul>
           </div>
         </section>
       </div>
-    </section>
+      <section class="panel control-panel"
+               aria-label="Kontrol aksi, jobs, dan activity">
+        <header class="panel-header control-header">
+          <span class="control-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" focusable="false"><use href="#icon-terminal"></use></svg>
+          </span>
+          <h2>Control Panel</h2>
+          <span class="control-sub">setup · actions · jobs · logs</span>
+        </header>
+        <div class="accordion" id="control-accordion">
+          <section class="accordion-item is-open">
+            <button id="accordion-setup" class="accordion-toggle" type="button"
+                    aria-expanded="true" aria-controls="accordion-setup-body">
+              <span class="accordion-glyph" aria-hidden="true">
+                <svg viewBox="0 0 24 24" focusable="false"><use href="#icon-layers"></use></svg>
+              </span>
+              <span class="accordion-title">Setup rack</span>
+              <span id="setup-summary" class="accordion-meta">0 device</span>
+              <span class="accordion-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" focusable="false"><use href="#icon-chevron-down"></use></svg>
+              </span>
+            </button>
+            <div id="accordion-setup-body" class="accordion-body"
+                 role="region" aria-labelledby="accordion-setup">
+              <div class="rack-setup">
+                <p class="setup-intro">
+                  Colokkan HP, klik <strong>Scan ADB</strong>, lalu
+                  <strong>Simpan &amp; terapkan</strong>. Tidak perlu mengedit JSON.
+                  Scan memakai adb di komputer tempat dashboard berjalan.
+                </p>
+                <div class="setup-grid">
+                  <label for="setup-rack-name">Nama rack
+                    <input id="setup-rack-name" type="text" value="rack-01"
+                           autocomplete="off">
+                  </label>
+                  <label for="setup-host">Appium host
+                    <input id="setup-host" type="text" value="127.0.0.1"
+                           autocomplete="off" spellcheck="false">
+                  </label>
+                </div>
+                <div class="setup-toolbar">
+                  <button id="setup-scan" class="btn btn-ghost btn-small" type="button">
+                    <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-scan"></use></svg>
+                    <span>Scan ADB</span>
+                  </button>
+                  <button id="setup-add" class="btn btn-ghost btn-small" type="button">
+                    <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-plus"></use></svg>
+                    <span>Tambah device</span>
+                  </button>
+                  <button id="setup-save" class="btn btn-primary btn-small" type="button">
+                    <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-save"></use></svg>
+                    <span>Simpan &amp; terapkan</span>
+                  </button>
+                </div>
+                <div class="setup-device-head" aria-hidden="true">
+                  <span>Slot</span><span>UDID / serial</span><span>Port</span><span></span>
+                </div>
+                <div id="setup-devices" class="setup-devices"></div>
+                <p id="setup-hint" class="hint">
+                  Disconnect semua device sebelum mengubah konfigurasi. Pastikan
+                  Appium sudah berjalan di host/port yang dipakai.
+                </p>
+              </div>
+            </div>
+          </section>
+          <section class="accordion-item">
+            <button id="accordion-action" class="accordion-toggle" type="button"
+                    aria-expanded="false" aria-controls="accordion-action-body">
+              <span class="accordion-glyph" aria-hidden="true">
+                <svg viewBox="0 0 24 24" focusable="false"><use href="#icon-play"></use></svg>
+              </span>
+              <span class="accordion-title">Run action</span>
+              <span class="accordion-meta">follow · post · comment</span>
+              <span class="accordion-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" focusable="false"><use href="#icon-chevron-down"></use></svg>
+              </span>
+            </button>
+            <div id="accordion-action-body" class="accordion-body" hidden
+                 role="region" aria-labelledby="accordion-action">
+              <div class="quick-actions">
+                <p class="quick-label">Aksi cepat untuk perangkat aktif:</p>
+                <div class="quick-grid">
+                  <button type="button" class="btn btn-ghost btn-small quick-action"
+                          data-quick-action="follow">
+                    <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-single"></use></svg>
+                    <span>+ Follow</span>
+                  </button>
+                  <button type="button" class="btn btn-ghost btn-small quick-action"
+                          data-quick-action="like">
+                    <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-heart"></use></svg>
+                    <span>Like</span>
+                  </button>
+                  <button type="button" class="btn btn-ghost btn-small quick-action"
+                          data-quick-action="comment">
+                    <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-send"></use></svg>
+                    <span>Comment</span>
+                  </button>
+                  <button type="button" class="btn btn-ghost btn-small quick-action"
+                          data-quick-action="live">
+                    <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-play"></use></svg>
+                    <span>Watch Feed</span>
+                  </button>
+                </div>
+              </div>
+              <form id="action-form" class="action-form">
+                <label for="platform-select">Platform</label>
+                <select id="platform-select"></select>
+                <p id="platform-note" class="platform-note"></p>
+
+                <div class="mode-toggle" role="group" aria-label="Mode eksekusi">
+                  <button id="mode-single" class="btn btn-small is-active" type="button">
+                    <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-single"></use></svg>
+                    <span>Single</span>
+                  </button>
+                  <button id="mode-bulk" class="btn btn-small" type="button">
+                    <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-bulk"></use></svg>
+                    <span>Bulk</span>
+                  </button>
+                </div>
+
+                <label for="action-select">Action</label>
+                <select id="action-select">
+                  <option value="follow">Follow user</option>
+                  <option value="post">Create post</option>
+                  <option value="comment">Comment on post</option>
+                  <option value="like">Like post</option>
+                  <option value="save">Save / bookmark post</option>
+                  <option value="reply">Reply to post</option>
+                </select>
+
+                <label for="target-select">Target</label>
+                <select id="target-select">
+                  <option value="all">All connected devices</option>
+                </select>
+
+                <label for="action-schedule">Jadwal (opsional)</label>
+                <input id="action-schedule" type="datetime-local">
+                <p class="hint">Kosongkan untuk menjalankan sekarang.</p>
+
+                <div id="bulk-fields" class="field" hidden>
+                  <label for="bulk-items">Items (satu per baris)</label>
+                  <textarea id="bulk-items" rows="6"
+                            placeholder="Satu item per baris"></textarea>
+                  <div class="bulk-options">
+                    <label for="bulk-interval">Jeda antar item (detik)</label>
+                    <input id="bulk-interval" type="number" min="0" max="300"
+                           step="0.5" value="0">
+                    <label for="bulk-retries">Retry item gagal</label>
+                    <input id="bulk-retries" type="number" min="0" max="5"
+                           step="1" value="0">
+                  </div>
+                  <label class="file-import" for="bulk-file">
+                    Import file (.txt/.csv)
+                    <input id="bulk-file" type="file"
+                           accept=".txt,.csv,text/plain,text/csv">
+                  </label>
+                  <p id="bulk-hint" class="hint">Satu username per baris.</p>
+                </div>
+
+                <div id="field-username-wrap" class="field">
+                  <label for="field-username">Username</label>
+                  <input id="field-username" type="text" placeholder="target.account"
+                         autocomplete="off" spellcheck="false">
+                </div>
+
+                <div id="field-url-wrap" class="field" hidden>
+                  <label for="field-url">Post URL</label>
+                  <input id="field-url" type="url"
+                         placeholder="https://www.facebook.com/... atau fb://post/123">
+                </div>
+
+                <div id="field-text-wrap" class="field">
+                  <label for="field-text" id="field-text-label">Text</label>
+                  <textarea id="field-text" rows="4" placeholder="Tulis teks…"></textarea>
+                </div>
+
+                <button id="action-submit" class="btn btn-primary btn-block" type="submit">
+                  <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-play"></use></svg>
+                  <span>Jalankan</span>
+                </button>
+                <p id="action-hint" class="hint">
+                  Aksi berjalan di background; pantau panel Activity.
+                </p>
+              </form>
+            </div>
+          </section>
+          <section class="accordion-item">
+            <button id="accordion-campaign" class="accordion-toggle" type="button"
+                    aria-expanded="false" aria-controls="accordion-campaign-body">
+              <span class="accordion-glyph" aria-hidden="true">
+                <svg viewBox="0 0 24 24" focusable="false"><use href="#icon-send"></use></svg>
+              </span>
+              <span class="accordion-title">Campaign</span>
+              <span class="accordion-meta">post ke beberapa platform</span>
+              <span class="accordion-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" focusable="false"><use href="#icon-chevron-down"></use></svg>
+              </span>
+            </button>
+            <div id="accordion-campaign-body" class="accordion-body" hidden
+                 role="region" aria-labelledby="accordion-campaign">
+              <div class="campaign-form">
+                <label for="campaign-text">Teks post</label>
+                <textarea id="campaign-text" rows="4"
+                          placeholder="Teks yang dikirim ke semua platform terpilih…"></textarea>
+
+                <label for="campaign-target">Target</label>
+                <select id="campaign-target">
+                  <option value="all">All connected devices</option>
+                </select>
+
+                <span class="campaign-label">Platform tujuan</span>
+                <div id="campaign-platforms" class="campaign-platforms"></div>
+
+                <label for="campaign-interval">Jeda antar platform (detik)</label>
+                <input id="campaign-interval" type="number" min="0" max="300"
+                       step="0.5" value="5">
+
+                <label for="campaign-schedule">Jadwal (opsional)</label>
+                <input id="campaign-schedule" type="datetime-local">
+
+                <button id="campaign-submit" class="btn btn-primary btn-block" type="button">
+                  <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-send"></use></svg>
+                  <span>Jalankan campaign</span>
+                </button>
+                <p id="campaign-hint" class="hint">
+                  Hanya platform yang mendukung text post yang bisa dipilih.
+                </p>
+              </div>
+            </div>
+          </section>
+          <section class="accordion-item">
+            <button id="accordion-automation" class="accordion-toggle" type="button"
+                    aria-expanded="false" aria-controls="accordion-automation-body">
+              <span class="accordion-glyph" aria-hidden="true">
+                <svg viewBox="0 0 24 24" focusable="false"><use href="#icon-activity"></use></svg>
+              </span>
+              <span class="accordion-title">Automation</span>
+              <span class="accordion-meta">limits · health · analytics</span>
+              <span class="accordion-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" focusable="false"><use href="#icon-chevron-down"></use></svg>
+              </span>
+            </button>
+            <div id="accordion-automation-body" class="accordion-body" hidden
+                 role="region" aria-labelledby="accordion-automation">
+              <div class="automation-form">
+                <p class="setup-intro">
+                  Batas harian dihitung per device dan per platform. Isi
+                  <strong>0</strong> untuk memblokir aksi tersebut.
+                </p>
+                <div class="limit-grid">
+                  <label for="limit-follow">Follow
+                    <input id="limit-follow" type="number" min="0" max="10000">
+                  </label>
+                  <label for="limit-post">Post
+                    <input id="limit-post" type="number" min="0" max="10000">
+                  </label>
+                  <label for="limit-comment">Comment
+                    <input id="limit-comment" type="number" min="0" max="10000">
+                  </label>
+                  <label for="limit-like">Like
+                    <input id="limit-like" type="number" min="0" max="10000">
+                  </label>
+                  <label for="limit-save">Save
+                    <input id="limit-save" type="number" min="0" max="10000">
+                  </label>
+                  <label for="limit-reply">Reply
+                    <input id="limit-reply" type="number" min="0" max="10000">
+                  </label>
+                </div>
+                <div class="setup-toolbar">
+                  <button id="limits-save" class="btn btn-primary btn-small" type="button">
+                    <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-save"></use></svg>
+                    <span>Simpan batas</span>
+                  </button>
+                  <button id="limits-reset" class="btn btn-ghost btn-small" type="button"
+                          title="Reset pemakaian limit hari ini">
+                    <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-refresh"></use></svg>
+                    <span>Reset limit</span>
+                  </button>
+                  <button id="health-check" class="btn btn-ghost btn-small" type="button">
+                    <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-activity"></use></svg>
+                    <span>Health check</span>
+                  </button>
+                  <button id="notify-enable" class="btn btn-ghost btn-small" type="button">
+                    <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-bell"></use></svg>
+                    <span>Aktifkan notifikasi</span>
+                  </button>
+                </div>
+                <div class="analytics-summary">
+                  <span>Hari ini</span>
+                  <strong id="analytics-ok">0</strong> ok
+                  <strong id="analytics-failed">0</strong> gagal
+                </div>
+                <div id="analytics-detail" class="analytics-detail"></div>
+                <p id="automation-hint" class="hint">
+                  Health check memeriksa apakah Appium masih bisa mengakses device.
+                </p>
+              </div>
+            </div>
+          </section>
+          <section class="accordion-item">
+            <button id="accordion-jobs" class="accordion-toggle" type="button"
+                    aria-expanded="false" aria-controls="accordion-jobs-body">
+              <span class="accordion-glyph" aria-hidden="true">
+                <svg viewBox="0 0 24 24" focusable="false">
+                  <path d="M8 6h12M8 12h12M8 18h12"></path>
+                  <path d="M4 6h.01M4 12h.01M4 18h.01"></path>
+                </svg>
+              </span>
+              <span class="accordion-title">Jobs</span>
+              <span class="accordion-meta">10 terakhir</span>
+              <span class="accordion-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" focusable="false"><use href="#icon-chevron-down"></use></svg>
+              </span>
+            </button>
+            <div id="accordion-jobs-body" class="accordion-body" hidden
+                 role="region" aria-labelledby="accordion-jobs">
+              <ul id="jobs-list" class="jobs">
+                <li class="empty">Belum ada job.</li>
+              </ul>
+            </div>
+          </section>
+          <section class="accordion-item">
+            <button id="accordion-activity" class="accordion-toggle" type="button"
+                    aria-expanded="false" aria-controls="accordion-activity-body">
+              <span class="accordion-glyph" aria-hidden="true">
+                <svg viewBox="0 0 24 24" focusable="false"><use href="#icon-activity"></use></svg>
+              </span>
+              <span class="accordion-title">Activity stream</span>
+              <span class="accordion-meta activity-meta">
+                <span class="live-dot" aria-hidden="true"></span>real-time log
+              </span>
+              <span class="accordion-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" focusable="false"><use href="#icon-chevron-down"></use></svg>
+              </span>
+            </button>
+            <div id="accordion-activity-body" class="accordion-body" hidden
+                 role="region" aria-labelledby="accordion-activity">
+              <div class="accordion-tools">
+                <button id="log-pause" class="btn btn-ghost btn-small" type="button"
+                        data-paused="false">
+                  <svg class="btn-icon" data-icon="pause" aria-hidden="true" focusable="false"><use href="#icon-pause"></use></svg>
+                  <svg class="btn-icon" data-icon="play" aria-hidden="true" focusable="false"><use href="#icon-play"></use></svg>
+                  <span id="log-pause-label">Pause</span>
+                </button>
+                <button id="log-clear" class="btn btn-ghost btn-small" type="button">
+                  <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-trash"></use></svg>
+                  <span>Clear</span>
+                </button>
+              </div>
+              <ul id="logs-list" class="logs">
+                <li class="empty">Menunggu aktivitas…</li>
+              </ul>
+            </div>
+          </section>
+        </div>
+      </section>
     </div>
   </main>
-
   <footer class="footer">
-    <span>Local dashboard · SocialMediaBot</span>
-    <span id="server-clock">—</span>
+    <div class="footer-group">
+      <span class="footer-item">
+        <span class="dot dot-on" id="footer-dot" aria-hidden="true"></span>
+        ADB Server: <strong id="footer-adb">Running</strong>
+      </span>
+      <span class="footer-item">Latensi: <strong id="footer-latency">—</strong></span>
+      <span class="footer-item">CPU Usage: <strong id="footer-cpu">—</strong></span>
+    </div>
+    <div class="footer-group footer-right">
+      <span class="footer-item">Device ID: <strong id="footer-device">—</strong></span>
+      <span class="footer-item">Screen: <strong id="footer-screen">—</strong></span>
+      <span class="footer-item" id="server-clock">—</span>
+    </div>
   </footer>
 
   <div id="toast" class="toast" hidden></div>

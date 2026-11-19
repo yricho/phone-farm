@@ -79,6 +79,7 @@
     setupDirty: false,
     notifiedJobs: new Set(),
     jobsInitialized: false,
+    latency: null,
   };
 
   const $ = (id) => document.getElementById(id);
@@ -179,11 +180,20 @@
     bulkRetries: $("bulk-retries"),
     bulkFile: $("bulk-file"),
     bulkHint: $("bulk-hint"),
+    rackOnline: $("rack-online"),
+    footerAdb: $("footer-adb"),
+    footerDot: $("footer-dot"),
+    footerLatency: $("footer-latency"),
+    footerCpu: $("footer-cpu"),
+    footerDevice: $("footer-device"),
+    footerScreen: $("footer-screen"),
+    screenSnapshot: $("screen-snapshot"),
+    deviceAddCard: $("device-add-card"),
   };
 
   const THEME_KEY = "gads.theme";
   const THEME_MEDIA = window.matchMedia("(prefers-color-scheme: light)");
-  const THEME_COLORS = { dark: "#12100e", light: "#f4efe6" };
+  const THEME_COLORS = { dark: "#070a0d", light: "#eef2f7" };
 
   function savedTheme() {
     try {
@@ -217,10 +227,7 @@
   }
 
   function restoreTheme() {
-    applyTheme(
-      savedTheme() || (THEME_MEDIA.matches ? "light" : "dark"),
-      false,
-    );
+    applyTheme(savedTheme() || "dark", false);
   }
 
   function toggleTheme() {
@@ -311,20 +318,22 @@
     const status = state.status;
     if (!status) return;
 
+    const connected = status.summary.connected;
+    const total = status.summary.total;
+
     els.rackName.textContent = status.rack.name;
     els.rackHost.textContent = status.rack.host || "—";
     els.rackSize.textContent = status.rack.size;
+    if (els.rackOnline) {
+      els.rackOnline.textContent = `${connected} terhubung`;
+    }
 
-    const connected = status.summary.connected;
-    const total = status.summary.total;
-    els.connPill.textContent = `${connected}/${total} terhubung`;
+    const allOnline = total > 0 && connected === total;
+    els.connPill.textContent =
+      `${connected}/${total} Terhubung` + (allOnline ? " (Online)" : "");
     els.connPill.className =
       "pill " +
-      (total > 0 && connected === total
-        ? "pill-ok"
-        : connected
-          ? "pill-warn"
-          : "pill-muted");
+      (allOnline ? "pill-ok" : connected ? "pill-warn" : "pill-muted");
 
     els.statConnected.textContent = connected;
     els.statTotal.textContent = `dari ${total}`;
@@ -337,6 +346,23 @@
       "stat-value stat-value-small " + (last ? `job-${last.status}` : "");
 
     els.clock.textContent = new Date(status.server_time * 1000).toLocaleString();
+
+    if (els.footerAdb) {
+      els.footerAdb.textContent = connected ? "Running" : "Idle";
+      els.footerAdb.dataset.state = connected ? "ok" : "idle";
+    }
+    if (els.footerDot) {
+      els.footerDot.className = "dot " + (connected ? "dot-on" : "dot-off");
+    }
+    if (els.footerLatency) {
+      els.footerLatency.textContent =
+        state.latency == null ? "—" : `${state.latency} ms`;
+    }
+    if (els.footerDevice) {
+      els.footerDevice.textContent = state.liveUdid || "—";
+    }
+    const screenSource = status.tuning && status.tuning.screen_source;
+    if (els.footerScreen) els.footerScreen.textContent = screenSource || "—";
 
     renderLiveStrip(status.devices);
     renderSetup(status);
@@ -375,15 +401,20 @@
     entry.dot.className =
       "dot " + (device.connected ? "dot-on" : "dot-off");
     entry.slot.textContent = device.slot;
-    entry.badge.textContent = device.connected ? "Online" : "Offline";
+    const active = state.liveUdid === device.udid;
+    entry.badge.textContent = active
+      ? "AKTIF"
+      : device.connected
+        ? "Online"
+        : "Offline";
     entry.badge.className =
-      "live-device-badge " + (device.connected ? "is-online" : "is-offline");
+      "live-device-badge " +
+      (active ? "is-active" : device.connected ? "is-online" : "is-offline");
     entry.udid.textContent = device.udid;
     entry.port.textContent = `Port ${device.appium_port}`;
     entry.session.textContent = device.session_id
       ? `Sess ${device.session_id.slice(0, 8)}`
       : "No session";
-    const active = state.liveUdid === device.udid;
     entry.button.className = [
       "live-device",
       device.connected ? "is-connected" : "is-offline",
@@ -1098,9 +1129,19 @@
   function markLiveCard(udid) {
     for (const [chipUdid, entry] of state.liveStrip) {
       const active = chipUdid === udid;
+      const connected = Boolean(entry.device && entry.device.connected);
       entry.button.classList.toggle("is-active", active);
       entry.button.setAttribute("aria-pressed", String(active));
+      entry.badge.textContent = active
+        ? "AKTIF"
+        : connected
+          ? "Online"
+          : "Offline";
+      entry.badge.className =
+        "live-device-badge " +
+        (active ? "is-active" : connected ? "is-online" : "is-offline");
     }
+    if (els.footerDevice) els.footerDevice.textContent = udid || "—";
     if (udid) {
       const entry = state.liveStrip.get(udid);
       if (entry) centerLiveChip(entry);
@@ -1177,13 +1218,20 @@
       els.panelSlot.textContent = "—";
       els.panelDevice.textContent = "—";
       els.panelSession.textContent = "—";
+      els.panelSession.removeAttribute("title");
       els.panelPort.textContent = "—";
+      if (els.footerDevice) els.footerDevice.textContent = "—";
       return;
     }
+    const session = device.session_id || "";
     els.panelSlot.textContent = device.slot;
     els.panelDevice.textContent = device.udid;
-    els.panelSession.textContent = device.session_id || "—";
+    els.panelSession.textContent = session
+      ? `${session.slice(0, 13)}…`
+      : "—";
+    els.panelSession.title = session;
     els.panelPort.textContent = device.appium_port;
+    if (els.footerDevice) els.footerDevice.textContent = device.udid;
   }
 
   function openScreen(udid) {
@@ -1191,7 +1239,7 @@
     if (!device) return;
     state.liveUdid = udid;
     els.liveRetry.disabled = !device.connected;
-    els.liveTitle.textContent = `Live · ${device.slot}`;
+    els.liveTitle.textContent = device.slot;
     els.liveSubtitle.textContent = `${device.udid} · port ${device.appium_port}`;
     fillLiveMeta(device);
     renderMuteButton(device);
@@ -1214,7 +1262,7 @@
       stopLiveScreen();
       return;
     }
-    els.liveTitle.textContent = `Live · ${device.slot}`;
+    els.liveTitle.textContent = device.slot;
     els.liveSubtitle.textContent = `${device.udid} · port ${device.appium_port}`;
     fillLiveMeta(device);
     renderMuteButton(device);
@@ -1259,11 +1307,11 @@
     state.liveUdid = null;
     markLiveCard(null);
     els.liveTitle.textContent = "Live screen";
-    els.liveSubtitle.textContent = "Pilih device dari daftar di bawah";
+    els.liveSubtitle.textContent = "Pilih device untuk mulai";
     fillLiveMeta(null);
     renderMuteButton(null);
     renderCloseAppsButton(null);
-    setLiveStatus("—", "muted");
+    setLiveStatus("Standby", "muted");
     els.liveRetry.disabled = true;
     els.liveEmpty.hidden = false;
     els.liveEmpty.textContent = "Pilih device dari daftar di bawah.";
@@ -1272,9 +1320,79 @@
     els.screenInputStatus.textContent = "Klik = tap · drag = swipe";
   }
 
+  function saveScreenSnapshot() {
+    const img = els.liveImg;
+    if (!state.liveUdid || img.hidden || !img.naturalWidth) {
+      toast("Live screen belum aktif.", "bad");
+      return;
+    }
+    try {
+      const canvas = document.createElement("canvas");
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      const context = canvas.getContext("2d");
+      context.drawImage(img, 0, 0);
+      const link = document.createElement("a");
+      link.download = `${state.liveUdid}-${Date.now()}.png`;
+      link.href = canvas.toDataURL("image/png");
+      link.click();
+      toast("Snapshot layar disimpan.", "ok");
+    } catch (error) {
+      toast(`Snapshot gagal: ${error.message}`, "bad");
+    }
+  }
+
+  function openSetupForNewSlot() {
+    const toggle = $("accordion-setup");
+    const body = $("accordion-setup-body");
+    if (toggle && toggle.getAttribute("aria-expanded") !== "true") {
+      toggle.click();
+    }
+    if (els.setupAdd) els.setupAdd.click();
+    if (body) body.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+
+  function applyQuickAction(action) {
+    if (action === "live") {
+      const device =
+        currentDevice(state.liveUdid) ||
+        (state.status &&
+          state.status.devices.find((entry) => entry.connected));
+      if (device) {
+        openScreen(device.udid);
+      } else {
+        toast("Belum ada device online.", "bad");
+      }
+      return;
+    }
+    const option = [...els.actionSelect.options].find(
+      (entry) => entry.value === action,
+    );
+    if (!option) {
+      toast(`Aksi ${action} belum didukung platform ini.`, "bad");
+      return;
+    }
+    els.actionSelect.value = action;
+    renderActionFields();
+    const target = !els.usernameWrap.hidden
+      ? els.username
+      : !els.urlWrap.hidden
+        ? els.url
+        : !els.textWrap.hidden
+          ? els.text
+          : null;
+    if (target) {
+      target.focus();
+      if (typeof target.select === "function") target.select();
+    }
+    els.actionSelect.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+
   async function refreshStatus() {
     try {
+      const started = performance.now();
       state.status = await api("/api/status");
+      state.latency = Math.max(1, Math.round(performance.now() - started));
       setOnline(true);
       render();
     } catch (error) {
@@ -1585,6 +1703,17 @@
     const device = currentDevice(state.liveUdid);
     if (device) startLiveStream(device);
   });
+  if (els.screenSnapshot) {
+    els.screenSnapshot.addEventListener("click", saveScreenSnapshot);
+  }
+  if (els.deviceAddCard) {
+    els.deviceAddCard.addEventListener("click", openSetupForNewSlot);
+  }
+  for (const quickButton of document.querySelectorAll("[data-quick-action]")) {
+    quickButton.addEventListener("click", () =>
+      applyQuickAction(quickButton.dataset.quickAction),
+    );
+  }
   els.liveStripPrev.addEventListener("click", () => scrollLiveStrip(-1));
   els.liveStripNext.addEventListener("click", () => scrollLiveStrip(1));
   els.liveDeviceList.addEventListener(
@@ -1763,17 +1892,12 @@
   }
   if (typeof THEME_MEDIA.addEventListener === "function") {
     THEME_MEDIA.addEventListener("change", () => {
-      if (!savedTheme()) {
-        applyTheme(THEME_MEDIA.matches ? "light" : "dark", false);
-      }
+      if (!savedTheme()) applyTheme("dark", false);
     });
   }
   window.addEventListener("storage", (event) => {
     if (event.key === THEME_KEY) {
-      applyTheme(
-        savedTheme() || (THEME_MEDIA.matches ? "light" : "dark"),
-        false,
-      );
+      applyTheme(savedTheme() || "dark", false);
     }
   });
 
