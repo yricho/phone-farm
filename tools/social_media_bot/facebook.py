@@ -16,8 +16,9 @@ import os
 import random
 import tempfile
 import time
+import xml.etree.ElementTree as ElementTree
 from pathlib import Path
-from typing import Any, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 from urllib.parse import urlsplit
 
 try:
@@ -66,6 +67,8 @@ BY_ANDROID_UIAUTOMATOR = "-android uiautomator"
 BY_XPATH = "xpath"
 
 KEYCODE_ENTER = 66
+#: KEYCODE_WAKEUP turns the screen on without toggling it off again.
+KEYCODE_WAKEUP = 224
 POLL_INTERVAL = 0.5
 OPTIONAL_TAB_TIMEOUT = 8.0
 #: Seconds to wait for the composer editor before tapping the composer again.
@@ -188,9 +191,12 @@ def create_post(
 
     When the composer screen takes a while (or a previous failed run left the app
     on it), the composer is tapped again and the focused field is reused before
-    the step fails. A failed run also saves the Appium page source and a
-    screenshot so the locators can be tuned; the paths are appended to the
-    raised error and can be redirected with ``GADS_UI_DUMP_DIR``.
+    the step fails. The screen is woken up first (sleeping phones on a farm have
+    no visible UI) and the whole flow is retried once when it failed before the
+    Post tap. A failed run also saves the Appium page source and a screenshot and
+    attaches the current package/activity/lock state plus the visible labels, so
+    a slot that behaves differently can be diagnosed; the dump directory can be
+    redirected with ``GADS_UI_DUMP_DIR``.
 
     Args:
         driver: Connected Appium ``WebDriver``, e.g. ``bot.get_driver(udid)``.
@@ -215,71 +221,110 @@ def create_post(
     log = logger or logging.getLogger(__name__)
 
     log.info("Facebook: creating a post (%d characters)", len(text))
-    try:
-        log.info("Facebook: opening %s", package)
-        driver.activate_app(package)
-        _wait_for_foreground(driver, package, timeout, log)
-        _pause(low, high, log, "opening Facebook")
-
-        editor = _reuse_open_composer(driver, timeout, log)
-        if editor is None:
-            composer = _open_post_composer_entry(
-                driver, package, timeout, low, high, log
-            )
-            editor = _open_post_composer(driver, composer, timeout, low, high, log)
-        # Newer Facebook builds open a separate "Buat postingan baru" screen where
-        # the field is not focused yet: tap it first, otherwise send_keys goes to
-        # the page instead of the text field.
+    last_error: Optional[BaseException] = None
+    # One extra attempt is safe: a retry only happens when the flow never
+    # reached the Post tap, so a published post can never be duplicated.
+    for attempt in range(2):
+        state: Dict[str, bool] = {"submitted": False}
         try:
-            editor.click()
-        except Exception:  # noqa: BLE001 - field may already be focused
-            log.debug("Facebook: could not tap the editor; typing into the focus")
-        _pause(low, high, log, "focusing the post editor")
-        _clear(editor, log)
-        editor.send_keys(text)
-        _pause(low, high, log, "typing the post")
-
-        _hide_keyboard(driver, log)
-
-        # Facebook 588+ uses a two step composer: "Postingan baru" -> Berikutnya
-        # -> audience screen -> final Posting/Post. Older builds publish straight
-        # from the composer, so check for the final button first.
-        post_button = _find_button(driver, _post_button_locators())
-        if post_button is None:
-            next_button = _wait_for_button(
-                driver,
-                _next_button_locators(),
-                min(timeout, 10.0),
-                "the Next button",
-                required=False,
+            return _publish_post(
+                driver, text, package, timeout, low, high, log, state
             )
-            if next_button is not None:
-                _tap_element(driver, next_button, log)
-                _pause(low, high, log, "pressing Next")
-            post_button = _wait_for_post_button(driver, timeout)
-
-        if not _tap_element(driver, post_button, log):
-            raise FacebookAutomationError(
-                "the Post button was found but could not be tapped"
+        except FacebookAutomationError as exc:
+            last_error = exc
+            if state["submitted"] or attempt > 0:
+                break
+            log.warning(
+                "Facebook: post attempt %d failed before submitting (%s); "
+                "retrying once",
+                attempt + 1,
+                exc,
             )
-        _pause(low, high, log, "pressing Post")
+            _pause(low, high, log, "retrying the post")
+        except Exception as exc:  # noqa: BLE001 - wrapped for the operator
+            last_error = exc
+            break
 
-        log.info("Facebook: post published")
-        return PostResult(text, STATUS_POSTED, _element_text(post_button))
-    except FacebookAutomationError as exc:
-        # Keep the original message (tests and operators rely on it) but append
-        # the UI dump path so the next failed run can be diagnosed without
-        # guessing the locators.
-        artifacts = _capture_failure_artifacts(driver, "post", log)
-        if artifacts:
-            raise FacebookAutomationError(f"{exc} ({artifacts})") from exc
-        raise
-    except Exception as exc:
-        artifacts = _capture_failure_artifacts(driver, "post", log)
-        detail = f" ({artifacts})" if artifacts else ""
+    artifacts = _capture_failure_artifacts(driver, "post", log)
+    context = _session_context(driver)
+    details = " ".join(part for part in (context, artifacts) if part)
+    if isinstance(last_error, FacebookAutomationError):
+        message = str(last_error)
+    elif last_error is not None:
+        message = f"create_post failed on {package}: {last_error}"
+    else:  # pragma: no cover - defensive
+        message = f"create_post failed on {package}"
+    if details:
+        message = f"{message} ({details})"
+    raise FacebookAutomationError(message) from last_error
+
+
+def _publish_post(
+    driver: Any,
+    text: str,
+    package: str,
+    timeout: float,
+    low: float,
+    high: float,
+    logger: logging.Logger,
+    state: Dict[str, bool],
+) -> PostResult:
+    """Run one end-to-end publish attempt and return its result."""
+
+    logger.info("Facebook: opening %s", package)
+    _wake_device(driver, logger)
+    driver.activate_app(package)
+    _wait_for_foreground(driver, package, timeout, logger)
+    _pause(low, high, logger, "opening Facebook")
+
+    editor = _reuse_open_composer(driver, timeout, logger)
+    if editor is None:
+        composer = _open_post_composer_entry(
+            driver, package, timeout, low, high, logger
+        )
+        editor = _open_post_composer(driver, composer, timeout, low, high, logger)
+    # Newer Facebook builds open a separate "Buat postingan baru" screen where
+    # the field is not focused yet: tap it first, otherwise send_keys goes to
+    # the page instead of the text field.
+    try:
+        editor.click()
+    except Exception:  # noqa: BLE001 - field may already be focused
+        logger.debug("Facebook: could not tap the editor; typing into the focus")
+    _pause(low, high, logger, "focusing the post editor")
+    _clear(editor, logger)
+    editor.send_keys(text)
+    _pause(low, high, logger, "typing the post")
+
+    _hide_keyboard(driver, logger)
+
+    # Facebook 588+ uses a two step composer: "Postingan baru" -> Berikutnya
+    # -> audience screen -> final Posting/Post. Older builds publish straight
+    # from the composer, so check for the final button first.
+    post_button = _find_button(driver, _post_button_locators())
+    if post_button is None:
+        next_button = _wait_for_button(
+            driver,
+            _next_button_locators(),
+            min(timeout, 10.0),
+            "the Next button",
+            required=False,
+        )
+        if next_button is not None:
+            _tap_element(driver, next_button, logger)
+            _pause(low, high, logger, "pressing Next")
+        post_button = _wait_for_post_button(driver, timeout)
+
+    # From here on the tap may already have published the post, so the caller
+    # must not retry: a second attempt could duplicate it.
+    state["submitted"] = True
+    if not _tap_element(driver, post_button, logger):
         raise FacebookAutomationError(
-            f"create_post failed on {package}: {exc}{detail}"
-        ) from exc
+            "the Post button was found but could not be tapped"
+        )
+    _pause(low, high, logger, "pressing Post")
+
+    logger.info("Facebook: post published")
+    return PostResult(text, STATUS_POSTED, _element_text(post_button))
 
 
 def comment_on_post(
@@ -495,6 +540,60 @@ def _hide_keyboard(driver: Any, logger: logging.Logger) -> None:
         hide()
     except Exception:
         logger.debug("Keyboard was not visible", exc_info=True)
+
+
+def _wake_device(driver: Any, logger: logging.Logger) -> None:
+    """Turn the screen on and warn when the device is still locked.
+
+    Phones on a farm commonly fall asleep while waiting in the queue; a sleeping
+    device still reports Facebook as foreground but has no visible UI, which
+    used to surface as ``waiting for the post composer`` only on some slots.
+    """
+
+    press = getattr(driver, "press_keycode", None)
+    if callable(press):
+        try:
+            press(KEYCODE_WAKEUP)
+        except Exception:
+            logger.debug("Could not wake the screen", exc_info=True)
+
+    is_locked = getattr(driver, "is_locked", None)
+    if not callable(is_locked):
+        return
+    try:
+        locked = bool(is_locked())
+    except Exception:
+        logger.debug("Could not read the lock state", exc_info=True)
+        return
+    if not locked:
+        return
+
+    logger.warning("Facebook: the device is locked; trying a swipe to unlock")
+    swipe = getattr(driver, "swipe", None)
+    get_size = getattr(driver, "get_window_size", None)
+    if callable(swipe) and callable(get_size):
+        try:
+            size = get_size()
+            width = int(size.get("width", 0))
+            height = int(size.get("height", 0))
+            if width > 0 and height > 0:
+                swipe(
+                    width // 2,
+                    int(height * 0.8),
+                    width // 2,
+                    int(height * 0.2),
+                    200,
+                )
+        except Exception:
+            logger.debug("Could not swipe the keyguard away", exc_info=True)
+
+    try:
+        if is_locked():
+            logger.warning(
+                "Facebook: the device is still locked; unlock it manually"
+            )
+    except Exception:
+        logger.debug("Could not re-read the lock state", exc_info=True)
 
 
 def _element_text(element: Any) -> str:
@@ -1069,6 +1168,65 @@ def _tap_element(driver: Any, element: Any, logger: logging.Logger) -> bool:
         except Exception:
             logger.debug("driver.tap failed", exc_info=True)
     return False
+
+
+def _visible_texts(driver: Any, limit: int = 8) -> List[str]:
+    """Return the first labelled nodes of the current page source.
+
+    The short list is appended to the raised error so an operator can tell a
+    login/checkpoint screen or dialog apart from a plain feed without opening
+    the XML dump.
+    """
+
+    try:
+        source = driver.page_source
+    except Exception:
+        return []
+    if not isinstance(source, str) or not source:
+        return []
+    try:
+        root = ElementTree.fromstring(source)
+    except ElementTree.ParseError:
+        return []
+
+    seen = set()
+    texts: List[str] = []
+    for node in root.iter("node"):
+        for attr in ("text", "content-desc"):
+            value = " ".join((node.get(attr) or "").split())
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            texts.append(value if len(value) <= 32 else value[:31] + "…")
+            break
+        if len(texts) >= limit:
+            break
+    return texts
+
+
+def _session_context(driver: Any) -> str:
+    """Summarise the device state for a failed action (package/activity/lock)."""
+
+    parts: List[str] = []
+    for attr in ("current_package", "current_activity"):
+        try:
+            value = getattr(driver, attr, None)
+        except Exception:
+            value = None
+        if isinstance(value, str) and value:
+            parts.append(f"{attr}={value}")
+
+    is_locked = getattr(driver, "is_locked", None)
+    if callable(is_locked):
+        try:
+            parts.append(f"locked={bool(is_locked())}")
+        except Exception:
+            pass
+
+    texts = _visible_texts(driver)
+    if texts:
+        parts.append("visible=" + " | ".join(texts))
+    return "; ".join(parts)
 
 
 def _capture_failure_artifacts(

@@ -898,6 +898,95 @@ class CreatePostTests(unittest.TestCase):
         self.assertEqual(popup.clicked, 1)
         self.assertEqual(editor.text, "Halo popup")
 
+    def test_create_post_wakes_the_screen_before_opening_facebook(self):
+        elements, _refs = build_composer_elements()
+        driver = FakeDriver(elements)
+
+        create_post(driver, "Halo bangun")
+
+        self.assertEqual(driver.keycodes[0], facebook.KEYCODE_WAKEUP)
+
+    def test_create_post_retries_once_before_submitting(self):
+        prompt = FakeElement(
+            text="Apa yang Anda pikirkan?",
+            displayed=False,
+            element_id="prompt-node",
+        )
+        editor = FakeElement(
+            class_name="android.widget.EditText", element_id="editor-node"
+        )
+        button = FakeElement(
+            text="Posting",
+            content_desc="Posting",
+            class_name="android.widget.Button",
+            element_id="post-button",
+        )
+
+        class FeedOnSecondLaunch(FakeDriver):
+            def __init__(self, elements, **kwargs):
+                super().__init__(elements, **kwargs)
+                self.launches = 0
+
+            def activate_app(self, package):
+                super().activate_app(package)
+                self.launches += 1
+                if self.launches >= 2:
+                    prompt.displayed = True
+
+        driver = FeedOnSecondLaunch([prompt, editor, button])
+
+        with mock.patch.object(facebook, "COMPOSER_FIRST_WAIT", 0.02):
+            result = create_post(driver, "Halo retry", timeout=0.1)
+
+        self.assertTrue(result.posted)
+        self.assertEqual(driver.activated, ["com.facebook.katana"] * 2)
+        self.assertEqual(editor.text, "Halo retry")
+
+    def test_create_post_does_not_retry_after_reaching_the_post_button(self):
+        class Stubborn(FakeElement):
+            def click(self):
+                raise RuntimeError("element is not clickable")
+
+        prompt = FakeElement(text="Apa yang Anda pikirkan?", element_id="prompt-node")
+        editor = FakeElement(
+            class_name="android.widget.EditText", element_id="editor-node"
+        )
+        button = Stubborn(
+            text="Posting",
+            content_desc="Posting",
+            class_name="android.widget.Button",
+            element_id="post-button",
+        )
+        driver = FakeDriver([prompt, editor, button])
+        driver.script_error = RuntimeError("no gestures")
+
+        with self.assertRaises(FacebookAutomationError):
+            create_post(driver, "Halo sekali", timeout=0.1)
+
+        self.assertEqual(driver.activated, ["com.facebook.katana"])
+
+    def test_create_post_reports_the_device_context_on_failure(self):
+        class ContextDriver(FakeDriver):
+            current_package = "com.facebook.katana"
+            current_activity = ".LoginActivity"
+
+            def is_locked(self):
+                return True
+
+        driver = ContextDriver([])
+        driver.page_source = (
+            "<hierarchy><node text='Masuk ke Facebook' /></hierarchy>"
+        )
+
+        with mock.patch.object(facebook, "COMPOSER_FIRST_WAIT", 0.02):
+            with self.assertRaises(FacebookAutomationError) as ctx:
+                create_post(driver, "Halo konteks", timeout=0.05)
+
+        message = str(ctx.exception)
+        self.assertIn("current_activity=.LoginActivity", message)
+        self.assertIn("locked=True", message)
+        self.assertIn("Masuk ke Facebook", message)
+
     def test_create_post_raises_when_composer_is_missing(self):
         elements, _refs = build_composer_elements(with_prompt=False)
         driver = FakeDriver(elements)

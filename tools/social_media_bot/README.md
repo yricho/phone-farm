@@ -470,7 +470,9 @@ Parameter `create_post`:
 
 Alur yang dijalankan:
 
-1. `activate_app` + tunggu app foreground
+1. bangunkan layar (`KEYCODE_WAKEUP` 224) + `activate_app` + tunggu app
+   foreground. Kalau HP masih terkunci, bot mencoba swipe keyguard dan menulis
+   peringatan; status lock juga ikut di pesan error kalau posting gagal.
 2. cari pill composer `What's on your mind` / `Apa yang Anda pikirkan` /
    `Bagikan sesuatu` / `Tulis sesuatu` / `Buat postingan` / `Create post`.
    Kalau layar composer dari percobaan sebelumnya masih terbuka, field-nya
@@ -495,10 +497,23 @@ Nilai balik `PostResult` berisi `post_text`, `status` (`"posted"`),
 `FacebookAutomationError` dilempar dengan konteks package.
 
 **Saat gagal (diagnosa):** page source dan screenshot layar otomatis disimpan,
-lalu path-nya ditempel di pesan error, mis.
-`Timed out after 20s waiting for the post editor (UI dump: …\Temp\gads-social-media-bot\facebook-post-20261119-134501.xml, …png)`.
-Kirim file XML itu untuk analisis locator. Set `GADS_UI_DUMP_DIR` bila ingin
-menyimpan dump di folder lain.
+lalu path-nya ditempel di pesan error bersama konteks device, mis.
+`Timed out after 20s waiting for the post composer (current_package=com.facebook.katana; current_activity=.LoginActivity; locked=True; visible=Masuk ke Facebook | …; UI dump: …xml, …png)`.
+Konteks `locked`/`visible` langsung menunjukkan apakah HP terkunci, kena
+login/checkpoint, atau ada dialog lain. Kirim file XML itu untuk analisis
+locator. Set `GADS_UI_DUMP_DIR` bila ingin menyimpan dump di folder lain.
+
+**Hanya sebagian slot yang gagal (versi Facebook sama):** alur sekarang
+membangunkan layar lebih dulu dan **mengulang sekali** kalau gagal sebelum
+tombol Post ditekan (tidak akan membuat posting dobel). Kalau masih ada slot
+yang gagal, baca konteks di pesan error:
+
+- `locked=True` → HP terkunci/PIN; matikan lock screen atau unlock manual;
+- `current_activity` bukan `com.facebook.katana` → ada app/dialog lain di depan;
+- `visible=Masuk ke Facebook` / `Konfirmasi identitas` → akun kena login/checkpoint;
+- `visible=` menampilkan dialog/popup lain → tutup manual, lalu ulangi;
+- slot yang sedang dibuka **live view**-nya juga lebih lambat karena stream
+  memakai sesi Appium yang sama — tekan **Stop** dulu saat mengetes slot itu.
 
 **Catatan:** tombol Post tidak akan tertukar dengan editor walaupun isi
 postingan persis `"Post"` (kandidat `EditText` difilter). Pill composer di feed
@@ -1115,7 +1130,8 @@ multiline, tombol Post hilang, validasi teks, delay acak, bounds pill/editor
 identik, layar composer sudah terbuka, tap composer diulang, label tombol
 terbungkus + tap koordinat, editor berbasis `View`, auto UI dump saat gagal,
 reuse layar composer sisa run, deep link `fb://feed` saat pill hilang, scroll
-feed ke atas, dismiss popup), alur
+feed ke atas, dismiss popup, wake screen, retry sekali sebelum submit, tidak
+retry setelah tombol Post, konteks device di pesan error), alur
 `comment_on_post` (deep link, kotak komentar tersembunyi, label Indonesia,
 fallback IME/Enter, URL gagal dibuka, foreground gagal, validasi, delay acak),
 registry & capability 5 platform (Instagram, Threads, X, TikTok), flow
