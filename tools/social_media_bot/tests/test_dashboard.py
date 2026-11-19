@@ -293,6 +293,38 @@ class DashboardStateTests(unittest.TestCase):
         self.assertIn("com.facebook.katana", outcome["failed"])
         self.assertIn("driver is gone", outcome["failed"]["com.facebook.katana"])
 
+    def test_reset_daily_usage_clears_today_counters(self):
+        self.state._consume_limit("facebook", "follow", "d0")
+        self.state._consume_limit("facebook", "follow", "d0")
+        self.state._consume_limit("facebook", "follow", "d1")
+        self.assertEqual(
+            self.state.automation_snapshot()["usage"],
+            {"facebook|follow|d0": 2, "facebook|follow|d1": 1},
+        )
+
+        snapshot = self.state.reset_daily_usage()
+
+        self.assertEqual(snapshot["usage"], {})
+        self.assertEqual(snapshot["reset"], {"device": "all", "counters": 2})
+        self.assertEqual(
+            snapshot["limits"]["follow"],
+            dashboard.DEFAULT_DAILY_LIMITS["follow"],
+        )
+
+    def test_reset_daily_usage_can_target_one_device(self):
+        self.state._consume_limit("facebook", "follow", "d0")
+        self.state._consume_limit("facebook", "follow", "d1")
+
+        snapshot = self.state.reset_daily_usage("d0")
+
+        self.assertEqual(set(snapshot["usage"]), {"facebook|follow|d1"})
+        self.assertEqual(snapshot["reset"], {"device": "d0", "counters": 1})
+
+        with self.assertRaises(ValueError):
+            self.state.reset_daily_usage("nope")
+        with self.assertRaises(ValueError):
+            self.state.reset_daily_usage(123)
+
     def test_connect_job_connects_the_rack(self):
         job = self.state.submit_connect()
         done = wait_job(self.state, job["id"])
@@ -1284,6 +1316,7 @@ class DashboardHttpTests(unittest.TestCase):
         self.assertIn('id="btn-close-apps"', body)
         self.assertIn('id="screen-close-apps"', body)
         self.assertIn('icon-apps', body)
+        self.assertIn('id="limits-reset"', body)
         self.assertIn('id="setup-scan"', body)
         self.assertIn('id="setup-save"', body)
         self.assertIn('id="setup-devices"', body)
@@ -1321,6 +1354,7 @@ class DashboardHttpTests(unittest.TestCase):
         self.assertIn("/audio", script)
         self.assertIn("closeApps", script)
         self.assertIn("/api/apps/close", script)
+        self.assertIn("/api/automation/reset", script)
         self.assertIn("scanSetup", script)
         self.assertIn("renderCampaignPlatforms", script)
         self.assertIn("maybeNotify", script)
@@ -1611,6 +1645,30 @@ class DashboardHttpTests(unittest.TestCase):
         )
         self.assertEqual(status, 400)
         self.assertIn("unknown platform", body["error"])
+
+    def test_automation_reset_endpoint_clears_usage(self):
+        self.bot.connect_devices(self.rack)
+        self.state.save_limits({"follow": 5})
+        job = self.state.submit_action("follow", "all", {"username": "one"})
+        wait_job(self.state, job["id"])
+        self.assertTrue(self.state.automation_snapshot()["usage"])
+
+        status, body = self.request_json(
+            "/api/automation/reset", "POST", {"device": "all"}
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(body["usage"], {})
+        self.assertEqual(body["reset"]["device"], "all")
+        self.assertGreater(body["reset"]["counters"], 0)
+        # Analytics stay intact so today's history is not lost.
+        self.assertGreater(body["totals"]["ok"], 0)
+
+        status, body = self.request_json(
+            "/api/automation/reset", "POST", {"device": "nope"}
+        )
+        self.assertEqual(status, 400)
+        self.assertIn("unknown target", body["error"])
 
     def test_connect_endpoint_runs_a_job(self):
         status, job = self.request_json("/api/connect", "POST", {})

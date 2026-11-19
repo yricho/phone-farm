@@ -723,7 +723,9 @@ Fitur:
 - **Campaign**: kirim satu teks post ke beberapa platform sekaligus dengan jeda
   antar platform, target device, dan jadwal opsional;
 - **Automation**: batas harian per device (follow/post/comment/like/save/reply),
-  health check Appium, analytics hari ini, dan browser notification;
+  tombol **Reset limit** untuk mengosongkan pemakaian hari ini (batas yang
+  dikonfigurasi & analytics tidak ikut hilang), health check Appium, analytics
+  hari ini, dan browser notification;
 - **Bulk campaign**: mode Single/Bulk, tempel/import daftar target
   (`.txt`/`.csv`), jeda antar item, retry otomatis, progress bar, cancel, dan
   retry item gagal;
@@ -837,6 +839,7 @@ API yang dipakai UI:
 | `POST` | `/api/health` | Health check Appium untuk device ter-connect |
 | `GET` | `/api/automation` | Limits, usage, dan analytics hari ini |
 | `POST` | `/api/automation` | Body `{"limits": {"follow": 30, ...}}` |
+| `POST` | `/api/automation/reset` | `{"device": "all"\|"<udid>"}` — reset pemakaian limit hari ini (batas & analytics tetap) |
 | `POST` | `/api/jobs/<id>/cancel` | Batalkan bulk/campaign/scheduled job |
 | `POST` | `/api/jobs/<id>/retry` | Ulangi job gagal / item bulk yang gagal total |
 
@@ -1167,7 +1170,8 @@ registry & capability 5 platform (Instagram, Threads, X, TikTok), flow
 follow/post/comment/like/save/reply lintas platform, penolakan post media-only,
 dashboard (job connect/disconnect/close apps/action, bulk campaign follow/comment +
 progress, retry item gagal, cancel, platform dispatch, **scheduler persisten,
-campaign lintas platform, daily limit, analytics, health check**, status/log
+campaign lintas platform, daily limit, **reset pemakaian limit harian**,
+analytics, health check**, status/log
 API, static assets, validasi request, log capture, live stream MJPEG, snapshot
 PNG, share capture per device, interactive input tap/swipe/text/key dengan
 scaling koordinat, **mute/unmute suara via adb dan fallback keycode Appium +

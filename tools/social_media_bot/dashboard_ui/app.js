@@ -156,6 +156,7 @@
     limitSave: $("limit-save"),
     limitReply: $("limit-reply"),
     limitsSave: $("limits-save"),
+    limitsReset: $("limits-reset"),
     healthCheck: $("health-check"),
     notifyEnable: $("notify-enable"),
     analyticsOk: $("analytics-ok"),
@@ -1639,6 +1640,34 @@
       els.automationHint.classList.add("hint-error");
     } finally {
       els.limitsSave.disabled = false;
+    }
+  });
+
+  els.limitsReset.addEventListener("click", async () => {
+    if (
+      !window.confirm(
+        "Reset pemakaian limit hari ini untuk semua device? Batas yang dikonfigurasi tidak berubah.",
+      )
+    ) {
+      return;
+    }
+    els.limitsReset.disabled = true;
+    els.automationHint.classList.remove("hint-error");
+    try {
+      const snapshot = await api("/api/automation/reset", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ device: "all" }),
+      });
+      renderAutomation(snapshot);
+      const cleared = (snapshot.reset && snapshot.reset.counters) || 0;
+      els.automationHint.textContent = `Limit hari ini direset (${cleared} counter).`;
+      toast("Limit harian direset", "ok");
+    } catch (error) {
+      els.automationHint.textContent = `Gagal: ${error.message}`;
+      els.automationHint.classList.add("hint-error");
+    } finally {
+      els.limitsReset.disabled = false;
     }
   });
 

@@ -1132,6 +1132,45 @@ class DashboardState:
         self._persist_state()
         return self.automation_snapshot()
 
+    def reset_daily_usage(self, device: Optional[str] = None) -> Dict[str, Any]:
+        """Reset today's consumed daily limits for all or one device.
+
+        Only the usage counters are cleared; the configured limits and today's
+        analytics stay untouched so the operator keeps the record of what ran.
+        """
+
+        if device is not None and not isinstance(device, str):
+            raise ValueError("device must be a string")
+        target = (device or "all").strip() or "all"
+        if target != "all":
+            known = {spec.udid for spec in self.rack.devices}
+            if target not in known:
+                raise ValueError(f"unknown target device {target!r}")
+
+        day = self._today_key()
+        removed = 0
+        with self._lock:
+            counters = self._usage.get(day)
+            if counters:
+                if target == "all":
+                    removed = len(counters)
+                    self._usage[day] = {}
+                else:
+                    suffix = f"|{target}"
+                    for key in [key for key in counters if key.endswith(suffix)]:
+                        counters.pop(key, None)
+                        removed += 1
+        self._persist_state()
+
+        logging.getLogger(LOGGER_NAME).info(
+            "Daily limits reset (%s, %d counter(s))",
+            "all devices" if target == "all" else target,
+            removed,
+        )
+        snapshot = self.automation_snapshot()
+        snapshot["reset"] = {"device": target, "counters": removed}
+        return snapshot
+
     def submit_connect(self, udids: Optional[Iterable[str]] = None) -> Dict[str, Any]:
         """Queue a connect job for the whole rack or a subset of UDIDs."""
         selected = self._select_devices(udids)
@@ -2705,6 +2744,12 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             if parsed.path == "/api/config":
                 self._send_json(
                     self.server.state.save_config(payload), HTTPStatus.OK
+                )
+                return
+            elif parsed.path == "/api/automation/reset":
+                device = payload.get("device", payload.get("target", "all"))
+                self._send_json(
+                    self.server.state.reset_daily_usage(device), HTTPStatus.OK
                 )
                 return
             elif parsed.path == "/api/automation":
