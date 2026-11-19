@@ -34,6 +34,7 @@ from typing import (
     Iterator,
     Mapping,
     Optional,
+    Sequence,
     Tuple,
     Union,
 )
@@ -180,6 +181,19 @@ class SocialMediaBot:
     DEFAULT_NEW_COMMAND_TIMEOUT = 300
     DEFAULT_MAX_WORKERS = 8
 
+    #: UiAutomator2 settings applied when ``fast_mode`` is enabled.
+    #:
+    #: These are *settings*, not capabilities (see the uiautomator2 driver
+    #: docs), so they are pushed with ``driver.update_settings`` right after the
+    #: session is created. ``waitForIdleTimeout`` is the big one: the driver
+    #: otherwise waits up to 10 s for the accessibility event stream to go idle
+    #: before every command, which is exactly what animated feeds like Facebook
+    #: never do.
+    FAST_AUTOMATION_SETTINGS: Dict[str, Any] = {
+        "waitForIdleTimeout": 0,
+        "waitForSelectorTimeout": 1000,
+    }
+
     def __init__(
         self,
         host: str = "127.0.0.1",
@@ -191,6 +205,8 @@ class SocialMediaBot:
         implicit_wait: float = 0.0,
         new_command_timeout: int = DEFAULT_NEW_COMMAND_TIMEOUT,
         max_workers: int = DEFAULT_MAX_WORKERS,
+        fast_mode: bool = False,
+        action_delay_range: Optional[Sequence[float]] = None,
         logger: Optional[logging.Logger] = None,
     ) -> None:
         """Create the bot.
@@ -207,6 +223,14 @@ class SocialMediaBot:
             max_workers: Default parallelism for batch operations. Tune it to
                 the rack size and Appium host capacity (8 is a safe start for
                 20 phones).
+            fast_mode: Disable the UiAutomator2 idle waits and window
+                animations. Commands get noticeably quicker on animated apps
+                (Facebook, Instagram) at the cost of tapping slightly earlier.
+            action_delay_range: Default ``(min, max)`` pause range (seconds)
+                used by callers that do not pass their own ``delay_range``.
+                ``None`` keeps the platform default (3-7 s); a shorter range
+                such as ``(1.0, 2.5)`` speeds up flows while keeping some
+                human-like pacing.
             logger: Optional logger; defaults to a module-level logger.
         """
         normalized_host = host.strip() if isinstance(host, str) else ""
@@ -235,6 +259,10 @@ class SocialMediaBot:
         self._implicit_wait = float(implicit_wait)
         self._new_command_timeout = int(new_command_timeout)
         self._max_workers = max_workers
+        self._fast_mode = bool(fast_mode)
+        self._action_delay_range = self._validate_action_delay_range(
+            action_delay_range
+        )
         self._logger = logger or logging.getLogger(__name__)
         # udid -> str(error) from the most recent connect_devices() call, so
         # callers (dashboard, CLI, diagnose.py) can explain *why* a phone failed.
@@ -319,6 +347,16 @@ class SocialMediaBot:
 
     def __iter__(self) -> Iterator[str]:
         return iter(self.device_ids)
+
+    @property
+    def fast_mode(self) -> bool:
+        """``True`` when the UiAutomator2 idle waits are disabled."""
+        return self._fast_mode
+
+    @property
+    def action_delay_range(self) -> Optional[Tuple[float, float]]:
+        """Default ``(min, max)`` pause range for actions, if configured."""
+        return self._action_delay_range
 
     def __repr__(self) -> str:
         return (
@@ -629,6 +667,8 @@ class SocialMediaBot:
                         self._quit_driver(udid, driver)
                         raise
 
+                self._apply_fast_settings(driver)
+
                 new_connection = DeviceConnection(
                     udid=connection.udid,
                     appium_port=connection.appium_port,
@@ -767,6 +807,8 @@ class SocialMediaBot:
                 self._quit_driver(udid, driver)
                 raise
 
+        self._apply_fast_settings(driver)
+
         connection = DeviceConnection(
             udid=udid,
             appium_port=port,
@@ -863,6 +905,9 @@ class SocialMediaBot:
             "appium:noReset": bool(no_reset),
             "appium:newCommandTimeout": timeout,
         }
+        if self._fast_mode:
+            # Skips the window animation scale sleeps done after every action
+            capabilities["appium:disableWindowAnimation"] = True
         if platform_version:
             capabilities["appium:platformVersion"] = str(platform_version)
         if app_package:
@@ -891,6 +936,40 @@ class SocialMediaBot:
         if not isinstance(udid, str) or not udid.strip():
             raise ValueError("udid must be a non-empty string")
         return udid.strip()
+
+    @staticmethod
+    def _validate_action_delay_range(
+        delay_range: Optional[Sequence[float]],
+    ) -> Optional[Tuple[float, float]]:
+        """Normalize the default ``(min, max)`` action pause range."""
+        if delay_range is None:
+            return None
+        try:
+            low, high = delay_range
+        except (TypeError, ValueError):
+            raise ValueError(
+                "action_delay_range must be a (min, max) pair of seconds"
+            ) from None
+        low_value, high_value = float(low), float(high)
+        if low_value < 0 or high_value < 0 or low_value > high_value:
+            raise ValueError(
+                "action_delay_range must satisfy 0 <= min <= max"
+            )
+        return (low_value, high_value)
+
+    def _apply_fast_settings(self, driver: Driver) -> None:
+        """Push the UiAutomator2 performance settings into a fresh session."""
+        if not self._fast_mode:
+            return
+        update_settings = getattr(driver, "update_settings", None)
+        if not callable(update_settings):
+            return
+        try:
+            update_settings(dict(self.FAST_AUTOMATION_SETTINGS))
+        except Exception:  # noqa: BLE001 - driver/version specific
+            self._logger.debug(
+                "Could not apply fast-mode UiAutomator2 settings", exc_info=True
+            )
 
     @staticmethod
     def _validate_port(appium_port: int) -> int:

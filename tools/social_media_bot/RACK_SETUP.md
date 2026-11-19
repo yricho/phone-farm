@@ -1121,6 +1121,8 @@ Centang sebelum rack dianggap siap produksi.
 Dokumen terkait:
 
 - [README SocialMediaBot](README.md) — API, platform, dashboard, GADS.
+- [PERFORMANCE.md](PERFORMANCE.md) — cara kerja live screen (adb vs Appium),
+  tuning jeda aksi, dan `fast_mode` UiAutomator2.
 - [generate_rack.py](generate_rack.py) — membuat manifest dari output ADB.
 - [docs/appium-credentials.md](../../docs/appium-credentials.md) — kredensial
   Appium/GADS.

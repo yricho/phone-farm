@@ -45,6 +45,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Keep the sessions open until Ctrl+C",
     )
+    parser.add_argument(
+        "--fast-mode",
+        action="store_true",
+        help=(
+            "Disable UiAutomator2 idle waits and window animations for every "
+            "session (faster actions on animated feeds)"
+        ),
+    )
     return parser
 
 
@@ -62,7 +70,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"Manifest tidak valid: {exc}")
         return 2
 
-    bot = SocialMediaBot(host=args.host or rack.host or "127.0.0.1")
+    bot = SocialMediaBot(
+        host=args.host or rack.host or "127.0.0.1", fast_mode=args.fast_mode
+    )
     connected: Dict[str, Driver] = {}
     missing: List[str] = list(rack.device_map)
     try:

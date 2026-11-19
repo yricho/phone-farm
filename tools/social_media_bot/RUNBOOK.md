@@ -91,6 +91,27 @@ cd C:\FARM\phone-farm\tools\social_media_bot
 
 Buka `http://127.0.0.1:8080`.
 
+Kalau aksi atau live screen terasa lambat, jalankan dengan tuning performa
+(penjelasan lengkap: [README](README.md#mode-cepat-tuning-performa)):
+
+```powershell
+.\start-dashboard.bat --fast-mode --action-delay-min 1 --action-delay-max 2.5
+
+# atau langsung tanpa .bat (mis. perlu --stream-interval 0.3)
+.\.venv\Scripts\python.exe .\dashboard.py --manifest rack-01.json `
+  --screen-source auto --stream-interval 0.3 --fast-mode `
+  --action-delay-min 1 --action-delay-max 2.5
+```
+
+- `--screen-source auto` (default): live screen lewat `adb screencap` untuk HP
+  yang menempel di PC ini, Appium untuk device remote.
+- `--fast-mode`: matikan `waitForIdleTimeout` UiAutomator2 + animasi window.
+- `--action-delay-min/max`: jeda antar langkah. Default 3–7 detik (anti-ban);
+  turunkan bertahap, jangan langsung ke 0.
+
+Tanpa flag di atas, semua nilai default tetap dipakai dan aman. Mekanisme
+lengkap (alur frame, prioritas nilai, batasan): [PERFORMANCE.md](PERFORMANCE.md).
+
 ### 6. Di dashboard
 
 1. **Setup rack** → pastikan 3 slot & UDID benar → **Simpan & terapkan**.

@@ -841,6 +841,266 @@ class ScreenStreamManagerTests(unittest.TestCase):
         manager.release(stream)
 
 
+class AdbFrameGrabberTests(unittest.TestCase):
+    """Local live-screen path: ``adb exec-out screencap -p``."""
+
+    FRAME = b"\x89PNG\r\n\x1a\nadb-frame"
+
+    @staticmethod
+    def _probe(status="device", code=0):
+        return SimpleNamespace(returncode=code, stdout=f"{status}\n", stderr="")
+
+    def test_capture_returns_png_from_adb(self):
+        results = [
+            self._probe(),
+            SimpleNamespace(returncode=0, stdout=self.FRAME, stderr=b""),
+        ]
+        with mock.patch.object(
+            dashboard.subprocess, "run", side_effect=results
+        ) as run:
+            grabber = dashboard.AdbFrameGrabber("emulator-5554")
+            self.assertEqual(grabber.capture(), self.FRAME)
+
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(
+            run.call_args_list[1].args[0],
+            ["adb", "-s", "emulator-5554", "exec-out", "screencap", "-p"],
+        )
+
+    def test_unattached_device_skips_screencap(self):
+        with mock.patch.object(
+            dashboard.subprocess,
+            "run",
+            return_value=SimpleNamespace(returncode=1, stdout="", stderr="unknown"),
+        ) as run:
+            grabber = dashboard.AdbFrameGrabber("emu_Provider_AVD")
+            self.assertIsNone(grabber.capture())
+            self.assertIsNone(grabber.capture())
+
+        # Only the probe ran - remote devices never reach screencap
+        self.assertEqual(run.call_count, 1)
+
+    def test_non_png_output_disables_adb_after_repeated_failures(self):
+        probe = self._probe()
+        garbage = SimpleNamespace(returncode=0, stdout=b"not-a-png", stderr=b"")
+        with mock.patch.object(
+            dashboard.subprocess,
+            "run",
+            side_effect=[probe] + [garbage] * dashboard.ADB_MAX_FAILURES,
+        ):
+            grabber = dashboard.AdbFrameGrabber("d0")
+            for _ in range(dashboard.ADB_MAX_FAILURES):
+                self.assertIsNone(grabber.capture())
+            self.assertFalse(grabber.available)
+
+    def test_missing_adb_binary_is_not_fatal(self):
+        with mock.patch.object(
+            dashboard.subprocess, "run", side_effect=FileNotFoundError("adb")
+        ):
+            grabber = dashboard.AdbFrameGrabber("d0")
+            self.assertIsNone(grabber.capture())
+
+
+class ScreenSourceTests(unittest.TestCase):
+    """Live screen frame source selection."""
+
+    def setUp(self):
+        self.rack = make_rack(2)
+        self.driver = FakeScreenDriver()
+        self.bot = FakeBot(self.rack, driver_factory=lambda udid: self.driver)
+
+    def test_auto_source_uses_adb_without_touching_appium(self):
+        frame = b"\x89PNG\r\n\x1a\nadb-frame"
+        manager = dashboard.ScreenStreamManager(self.bot, default_interval=0.01)
+        self.addCleanup(manager.close_all)
+
+        with mock.patch.object(
+            dashboard.AdbFrameGrabber, "capture", return_value=frame
+        ):
+            stream = manager.acquire("d0", 0.01)
+            try:
+                self.assertEqual(next(stream.frames()), frame)
+            finally:
+                manager.release(stream)
+
+        self.assertEqual(self.driver.calls, 0)
+
+    def test_auto_source_falls_back_to_appium(self):
+        manager = dashboard.ScreenStreamManager(self.bot, default_interval=0.01)
+        self.addCleanup(manager.close_all)
+
+        with mock.patch.object(
+            dashboard.AdbFrameGrabber, "capture", return_value=None
+        ):
+            stream = manager.acquire("d0", 0.01)
+            try:
+                frame = next(stream.frames())
+            finally:
+                manager.release(stream)
+
+        self.assertTrue(frame.startswith(b"\x89PNG"))
+        self.assertGreaterEqual(self.driver.calls, 1)
+
+    def test_appium_source_ignores_adb(self):
+        manager = dashboard.ScreenStreamManager(
+            self.bot, default_interval=0.01, screen_source="appium"
+        )
+        self.addCleanup(manager.close_all)
+
+        with mock.patch.object(dashboard.AdbFrameGrabber, "capture") as capture:
+            stream = manager.acquire("d0", 0.01)
+            try:
+                next(stream.frames())
+            finally:
+                manager.release(stream)
+
+        capture.assert_not_called()
+        self.assertGreaterEqual(self.driver.calls, 1)
+
+    def test_invalid_screen_source_is_rejected(self):
+        with self.assertRaises(ValueError):
+            dashboard.ScreenStreamManager(self.bot, screen_source="scrcpy")
+
+
+class RecordingPlatform(dashboard.PlatformAdapter):
+    """Adapter recording the options received by each action."""
+
+    info = dashboard.PlatformInfo(
+        "facebook",
+        "Facebook",
+        "com.facebook.katana",
+        {"post": ("text",), "follow": ("username",)},
+    )
+
+    def __init__(self):
+        self.calls = []
+
+    def create_post(self, driver, text, **kwargs):
+        self.calls.append(("post", text, kwargs))
+        return {"post_text": text, "status": "posted"}
+
+    def follow_user(self, driver, username, **kwargs):
+        self.calls.append(("follow", username, kwargs))
+        return {"username": username, "status": "followed"}
+
+
+class ActionTuningTests(unittest.TestCase):
+    """Startup tuning reaches dashboard jobs."""
+
+    def setUp(self):
+        self.rack = make_rack(2)
+        self.bot = FakeBot(self.rack)
+        self.bot.connect_devices(self.rack)
+        self.platform = RecordingPlatform()
+        self.state = dashboard.DashboardState(
+            self.bot,
+            self.rack,
+            platforms={"facebook": self.platform},
+            action_delay_range=(1.0, 2.5),
+        )
+        self.addCleanup(self.state.shutdown)
+
+    def test_action_delay_range_is_forwarded(self):
+        job = self.state.submit_action("post", "d0", {"text": "Halo"})
+        done = wait_job(self.state, job["id"])
+
+        self.assertEqual(done["status"], "succeeded")
+        self.assertEqual(len(self.platform.calls), 1)
+        _action, _value, kwargs = self.platform.calls[0]
+        self.assertEqual(kwargs["delay_range"], (1.0, 2.5))
+
+    def test_bulk_actions_receive_delay_range(self):
+        job = self.state.submit_bulk("follow", ["a", "b"])
+        done = wait_job(self.state, job["id"])
+
+        self.assertEqual(done["status"], "succeeded")
+        self.assertTrue(self.platform.calls)
+        for _action, _value, kwargs in self.platform.calls:
+            self.assertEqual(kwargs["delay_range"], (1.0, 2.5))
+
+    def test_default_state_keeps_platform_delays(self):
+        bot = FakeBot(self.rack)
+        bot.connect_devices(self.rack)
+        state = dashboard.DashboardState(
+            bot, self.rack, platforms={"facebook": self.platform}
+        )
+        self.addCleanup(state.shutdown)
+
+        job = state.submit_action("post", "d0", {"text": "Halo"})
+        wait_job(state, job["id"])
+
+        _action, _value, kwargs = self.platform.calls[-1]
+        self.assertNotIn("delay_range", kwargs)
+
+    def test_bot_delay_range_is_used_as_default(self):
+        bot = FakeBot(self.rack)
+        bot.action_delay_range = (0.5, 1.0)
+        state = dashboard.DashboardState(
+            bot, self.rack, platforms={"facebook": self.platform}
+        )
+        self.addCleanup(state.shutdown)
+
+        self.assertEqual(
+            state.status()["tuning"]["action_delay_range"], [0.5, 1.0]
+        )
+
+    def test_invalid_action_delay_range_is_rejected(self):
+        with self.assertRaises(ValueError):
+            dashboard.DashboardState(
+                self.bot, self.rack, action_delay_range=(2.0, 1.0)
+            )
+
+    def test_status_exposes_tuning(self):
+        tuning = self.state.status()["tuning"]
+
+        self.assertEqual(tuning["action_delay_range"], [1.0, 2.5])
+        self.assertEqual(tuning["screen_source"], "auto")
+        self.assertFalse(tuning["fast_mode"])
+
+
+class PerfFlagTests(unittest.TestCase):
+    """CLI flags that drive the performance tuning."""
+
+    def setUp(self):
+        self.parser = dashboard.build_parser()
+
+    def test_delay_flags_are_optional(self):
+        args = self.parser.parse_args([])
+
+        self.assertIsNone(dashboard._action_delay_from_args(args))
+
+    def test_delay_flags_require_both_bounds(self):
+        args = self.parser.parse_args(["--action-delay-min", "1"])
+
+        with self.assertRaises(ValueError):
+            dashboard._action_delay_from_args(args)
+
+    def test_delay_flags_are_validated(self):
+        args = self.parser.parse_args(
+            ["--action-delay-min", "1", "--action-delay-max", "2.5"]
+        )
+        self.assertEqual(dashboard._action_delay_from_args(args), (1.0, 2.5))
+
+        args = self.parser.parse_args(
+            ["--action-delay-min", "3", "--action-delay-max", "2"]
+        )
+        with self.assertRaises(ValueError):
+            dashboard._action_delay_from_args(args)
+
+    def test_fast_mode_and_screen_source_flags(self):
+        args = self.parser.parse_args(
+            ["--fast-mode", "--screen-source", "appium", "--adb", "/opt/adb"]
+        )
+
+        self.assertTrue(args.fast_mode)
+        self.assertEqual(args.screen_source, "appium")
+        self.assertEqual(args.adb, "/opt/adb")
+
+    def test_unknown_screen_source_is_rejected(self):
+        with self.assertRaises(SystemExit):
+            self.parser.parse_args(["--screen-source", "scrcpy"])
+
+
 class DashboardHttpTests(unittest.TestCase):
     def setUp(self):
         self.rack = make_rack(2)

@@ -1,0 +1,394 @@
+# PERFORMANCE — cara kerja live screen & tuning aksi
+
+Dokumen ini menjelaskan **mekanisme** di balik tiga tuas performa
+`tools/social_media_bot`:
+
+1. sumber frame live screen (`adb` vs Appium),
+2. tuning jeda aksi (`delay_range`), dan
+3. `fast_mode` (capability + setting UiAutomator2).
+
+Panduan pemakaian singkat ada di [README](README.md#mode-cepat-tuning-performa);
+dokumen ini fokus pada *bagaimana* semuanya bekerja, nilai default, dan batasannya.
+
+> Ringkas: default aplikasi **tidak berubah**. Semua tuas bersifat *opt-in*
+> (flag CLI atau argumen `SocialMediaBot(...)`), jadi perilaku lama tetap
+> tersedia dan aman untuk farm produksi.
+
+## 1. Ringkasan tuas
+
+| Tuas | Aktif lewat | Default | Efek utama |
+| --- | --- | --- | --- |
+| Sumber frame live screen | `--screen-source auto\|appium` | `auto` | Frame lokal diambil dengan `adb exec-out screencap -p`, tidak lewat UiAutomator2 |
+| Interval live screen | `--stream-interval` (atau `?interval=` di URL) | `1.0` dtk, clamp `0.3–10` | Semakin kecil semakin halus |
+| Jeda antar langkah aksi | `--action-delay-min/--action-delay-max` atau `SocialMediaBot(action_delay_range=...)` | platform: `(3.0, 7.0)` | Waktu diam di dalam alur follow/post/comment |
+| Mode cepat UiAutomator2 | `--fast-mode` / `fast_mode=True` | mati | `waitForIdleTimeout=0`, `waitForSelectorTimeout=1000`, animasi window dimatikan |
+
+Nilai yang sedang aktif selalu bisa dilihat di `GET /api/status` pada blok
+`tuning` (§6).
+
+## 2. Prinsip desain
+
+- **Default aman.** Tanpa flag, tidak ada perilaku yang berubah: frame lewat
+  Appium, jeda tetap 3–7 detik, idle wait UiAutomator2 tetap standar.
+- **Fallback selalu tersedia.** Jalur cepat (adb) tidak pernah menjadi syarat;
+  kalau tidak memungkinkan, sistem kembali ke Appium tanpa error ke pengguna.
+- **Satu sumber kebenaran untuk tuning.** Nilai tuning dioper dari CLI →
+  `SocialMediaBot`/`DashboardState` → dipakai di titik eksekusi, bukan disebar
+  ke UI/manifest.
+- **Tidak menyentuh data akun.** Tidak ada `fullReset`/`clear`; `no_reset=True`
+  tetap default sehingga login di HP dipertahankan.
+
+## 3. Cara kerja live screen
+
+### 3.1 Alur satu frame
+
+```text
+Browser (MJPEG <img>)
+   │  GET /api/devices/<udid>/stream?interval=0.3
+   ▼
+DashboardRequestHandler._serve_stream()
+   │  ScreenStreamManager.acquire(udid, interval)
+   │    ├─ pastikan device punya sesi Appium (get_driver → raise kalau offline)
+   │    ├─ clamp interval → 0.3..10
+   │    └─ buat/pakai ulang DeviceStream (satu per UDID, dibagi semua viewer)
+   ▼
+DeviceStream._capture_loop()  (thread daemon, satu per UDID)
+   │  1. frame_source()  ← AdbFrameGrabber.capture() bila screen_source=auto
+   │  2. frame is None?  → driver.get_screenshot_as_png()  (Appium)
+   │  3. simpan frame + notify subscriber
+   └─ sleep(max(0.05, interval - elapsed))
+   ▼
+multipart/x-mixed-replace, tiap part: Content-Type: image/png
+```
+
+Poin penting:
+
+- **Satu loop per device, bukan per viewer.** Dua tab browser yang menonton HP
+  yang sama berbagi frame yang sama.
+- **Stream tetap butuh sesi Appium.** Validasi `get_driver(udid)` di `acquire()`
+  membuat device yang belum di-*Connect* tidak bisa dibuka live screen-nya,
+  meskipun frame-nya nanti diambil lewat adb.
+- **Stream hidup selama ada subscriber.** `remove_subscriber()` menutup stream
+  saat subscriber terakhir pergi; `close_all()` dipakai saat Disconnect.
+- **Gagal 5× berturut-turut → stream ditutup.** Perilaku lama dipertahankan;
+  buka ulang live screen (atau `Connect all`) untuk memulai loop baru.
+- **Ganti host Appium ditolak saat ada stream aktif**
+  (`ScreenStreamManager.set_bot` → `RuntimeError`).
+
+### 3.2 `AdbFrameGrabber`
+
+Dibuat sekali per stream (bukan per frame), lalu dipakai sebagai `frame_source`.
+
+| Tahap | Perintah | Perilaku |
+| --- | --- | --- |
+| Probe (sekali, lazy) | `adb -s <udid> get-state` | Hasil di-cache di instance. `device` + exit 0 → jalur adb dipakai; selain itu → `None` (fallback Appium) |
+| Ambil frame | `adb -s <udid> exec-out screencap -p` | Timeout 5 dtk; hanya diterima bila keluaran dimulai magic PNG `\x89PNG\r\n\x1a\n` |
+| Kegagalan | — | Dihitung; setelah **3** kegagalan beruntun jalur adb dimatikan untuk stream itu (`available=False`) |
+
+Konsekuensi yang perlu diketahui:
+
+- Probe berjalan di **thread stream**, bukan di request HTTP, sehingga membuka
+  live screen tidak pernah menggantung menunggu adb.
+- Device remote (mis. device GADS `emu_<provider>_<AVD>` atau `device/<id>`)
+  otomatis gagal di probe → semua frame lewat Appium, tanpa konfigurasi.
+- Bila `adb` tidak ada di `PATH`, `FileNotFoundError` ditangkap → dianggap
+  "tidak tersedia", bukan error fatal. Pakai `--adb /path/ke/adb` bila perlu.
+
+### 3.3 Kenapa adb lebih cepat
+
+Screenshot Appium (`get_screenshot_as_png`) dieksekusi oleh **server
+UiAutomator2 di device**, memakai jalur yang sama dengan `find_element`,
+`click`, dan `send_keys`. Artinya:
+
+- frame berikutnya harus menunggu command sebelumnya selesai (serialisasi), dan
+- polling live screen **bersaing** dengan aksi otomasi di device yang sama.
+
+`adb exec-out screencap` berjalan di jalur terpisah (adb server ↔
+`screencap`), sehingga live screen tidak lagi memperlambat posting/comment.
+Inilah sebabnya menurunkan interval saja (tanpa mengganti sumber) tidak pernah
+sehalus GADS — plafonnya ada di serialisasi perintah Appium.
+
+### 3.4 Batas yang tetap berlaku
+
+- Endpoint `GET /api/devices/<udid>/screenshot` (tangkapan tunggal) **tetap**
+  memakai Appium; yang dialihkan hanya aliran MJPEG.
+- `--stream-interval` di bawah `0.3` tetap di-clamp ke `0.3` (kontrak lama
+  `ScreenStreamManager`), baik untuk adb maupun Appium.
+- Emulator/HP fisik yang tidak menempel di host dashboard tetap lewat Appium —
+  termasuk semua device GADS bila hub berjalan di mesin lain.
+
+## 4. Cara kerja tuning jeda aksi (`delay_range`)
+
+### 4.1 Empat tingkat prioritas
+
+Nilai `delay_range` yang dipakai sebuah aksi ditentukan berurutan:
+
+```text
+1. delay_range eksplisit pada pemanggilan aksi        (menang, tidak ditimpa)
+2. DashboardState.action_delay_range                  (flag CLI dashboard)
+3. SocialMediaBot.action_delay_range                  (constructor / embedder)
+4. Default platform: DEFAULT_DELAY_RANGE = (3.0, 7.0) (platforms/base.py)
+```
+
+- Di dashboard, langkah 2 dan 3 saling melengkapi: bila
+  `DashboardState(action_delay_range=...)` tidak diisi, nilainya diambil dari
+  `bot.action_delay_range`, sehingga aplikasi yang memakai
+  `SocialMediaBot(action_delay_range=...)` otomatis konsisten di UI.
+- API HTTP **tidak** menerima `delay_range` di dalam `params`: `submit_action`
+  dan `submit_bulk` memvalidasi field terhadap `ACTION_FIELDS` dan menolak
+  field asing. Jadi tuning dilakukan saat start, bukan per-request.
+- Manifest rack juga tidak membawa nilai tuning (hanya `rack`, `host`, dan
+  `devices`), dan `.state.json` tidak menyimpannya — tuning bersifat runtime.
+
+### 4.2 Titik injeksi di dashboard
+
+`DashboardState._action_params(action, params)`:
+- menyalin parameter job (tidak memutasi payload asli),
+- menambahkan `delay_range` hanya bila (a) tuning aktif, (b) `action` ada di
+  `ACTION_FIELDS`, dan (c) belum ada `delay_range` eksplisit.
+
+Fungsi ini dipakai oleh tiga jalur yang sama-sama berujung ke adapter platform:
+
+| Job | Pemakaian |
+| --- | --- |
+| `action` (satu device / semua device) | `_do_action` |
+| `bulk` (banyak item) | `_do_bulk` → per item |
+| `campaign` (post lintas platform) | `_do_campaign` → `_do_action` |
+
+Adapter platform (`FacebookPlatform`, `InstagramPlatform`, …) meneruskan
+`delay_range` ke langkah-langkahnya. Adapter legacy `_LegacyPlatform` (dipakai
+test/embedder) tetap mengabaikan kwarg tambahan, sehingga injeksi tidak pernah
+mengubah kontraknya.
+
+### 4.3 Berapa lama jeda itu dipakai
+
+`pause()` mengambil nilai acak `uniform(min, max)` **setelah** setiap langkah.
+Jumlah langkah berbeda antara adapter Facebook (memakai `facebook.py`) dan
+engine platform lain (memakai `platforms/base.py`), dan beberapa jeda bersyarat
+(mis. tombol *Next* pada composer Facebook 588):
+
+| Aksi | Jumlah jeda (FB / engine) | Default (3–7 s) | Tuned (1–2,5 s) |
+| --- | --- | --- | --- |
+| `post` | 5–6 / 4 | 15–42 / 12–28 s | 5–15 / 4–10 s |
+| `follow` | 7 / 6–7 | 21–49 / 18–49 s | 7–17,5 / 6–17,5 s |
+| `comment` | 3–4 / 3–4 | 9–28 s | 3–10 s |
+| `like` / `save` | — / 2 | 6–14 s | 2–5 s |
+| `reply` | — / 3–4 | 9–28 s | 3–10 s |
+
+Angka itu **belum** termasuk round-trip Appium (pencarian elemen, klik,
+`send_keys`). Jeda ini disengaja untuk meniru perilaku manusia; menurunkannya
+menaikkan risiko checkpoint platform.
+
+## 5. Cara kerja `fast_mode`
+
+### 5.1 Capability vs setting — bedanya penting
+
+`waitForIdleTimeout` **bukan capability**, melainkan *setting* server
+UiAutomator2. Karena itu `fast_mode` melakukan dua hal berbeda:
+
+| Kapan | Apa yang dikirim | Isi |
+| --- | --- | --- |
+| Sebelum sesi dibuat | capability `appium:disableWindowAnimation` | `True` — driver mematikan skala animasi window lewat `adb settings` |
+| Setelah sesi hidup | `driver.update_settings({...})` | `waitForIdleTimeout=0`, `waitForSelectorTimeout=1000` |
+
+`waitForIdleTimeout` default UiAutomator2 adalah **10.000 ms** dan ditunggu
+sebelum hampir setiap command; feed yang terus beranimasi (Facebook/Instagram)
+membuat wait ini habis terus. Menyetel `0` mematikan wait tersebut.
+`waitForSelectorTimeout` (default 10.000 ms) hanya berlaku untuk locator
+`-android uiautomator`, dan diturunkan ke 1.000 ms karena kode sudah punya
+loop polling sendiri (`wait_for_any`, interval 0,5 s).
+
+### 5.2 Siklus hidup
+
+```text
+connect_device() → _build_capabilities()  [sertakan disableWindowAnimation]
+                 → _create_driver()       [sesi Appium dibuat]
+                 → implicitly_wait()      [bila diatur]
+                 → _apply_fast_settings() [update_settings, hanya fast_mode]
+
+reconnect_device() → _create_driver()
+                   → implicitly_wait()
+                   → _apply_fast_settings()   ← diulang, karena sesi baru
+```
+
+- `_apply_fast_settings` **tidak** dipanggil bila `fast_mode` mati — nol
+  perubahan perilaku untuk pengguna lama.
+- Bila `driver.update_settings` tidak ada (driver lama) atau melempar error,
+  kegagalan dicatat sebagai log `debug` dan **sesi tetap dipakai**. Fast mode
+  bersifat best-effort, tidak pernah menggagalkan koneksi.
+- Nilai yang dipakai bisa dilihat di `SocialMediaBot.FAST_AUTOMATION_SETTINGS`.
+
+### 5.3 Konsekuensi & batasan
+
+- Karena wait idle dimatikan, tap bisa dieksekusi saat animasi transisi belum
+  selesai. Pada UI yang berubah cepat ini bisa berarti tap "melenceng".
+  Uji per platform/perangkat sebelum dipakai seluruh rak.
+- Fast mode tidak memakai `skipDeviceInitialization`,
+  `skipServerInstallation`, atau `autoGrantPermissions` — semuanya punya efek
+  samping (unlock/permission state) yang tidak boleh berubah diam-diam.
+- Fast mode tidak mempercepat jaringan atau render aplikasi; ia hanya
+  menghilangkan waktu tunggu yang dilakukan Appium.
+
+## 6. Observability
+
+### 6.1 `GET /api/status` → `tuning`
+
+```json
+"tuning": {
+  "fast_mode": true,
+  "action_delay_range": [1.0, 2.5],
+  "screen_source": "auto"
+}
+```
+
+- `action_delay_range` bernilai `null` bila tidak ada tuning (default platform).
+- `fast_mode` dibaca dari bot (`getattr(bot, "fast_mode", False)`), jadi
+  embedder yang memakai objek bot lain tetap aman.
+
+### 6.2 Log
+
+| Level | Pesan | Arti |
+| --- | --- | --- |
+| `debug` | `Could not apply fast-mode UiAutomator2 settings` | `update_settings` gagal; sesi tetap jalan tanpa tuning |
+| `warning` | `Screenshot failed for <udid>` | Endpoint screenshot tunggal (Appium) gagal |
+| — | Stream tertutup diam-diam | 5 kegagalan frame beruntun; buka ulang live screen |
+
+`AdbFrameGrabber` sengaja tidak menulis log per frame (bisa 3–8 baris/detik);
+kegagalannya terlihat dari frame yang tetap datang lewat Appium.
+
+### 6.3 Mengukur sendiri
+
+```bash
+# perkiraan fps: hitung part MJPEG dalam 5 detik
+curl -sN "http://127.0.0.1:8080/api/devices/<udid>/stream?interval=0.3" \
+  | timeout 5 grep -c "Content-Type: image/png" || true
+
+# biaya satu frame adb (target < 0,3 dtk untuk HP USB modern)
+time adb -s <udid> exec-out screencap -p > /dev/null
+
+# pastikan tuning aktif
+curl -s http://127.0.0.1:8080/api/status | python3 -c \
+  "import json,sys; print(json.load(sys.stdin)['tuning'])"
+```
+
+## 7. Konfigurasi lengkap
+
+### 7.1 Flag `dashboard.py`
+
+| Flag | Tipe/default | Fungsi |
+| --- | --- | --- |
+| `--fast-mode` | flag, mati | Kirim capability + setting UiAutomator2 (§5) ke setiap sesi yang dibuat dashboard |
+| `--action-delay-min` | float, `None` | Batas bawah jeda; wajib berpasangan dengan `--action-delay-max` |
+| `--action-delay-max` | float, `None` | Batas atas jeda |
+| `--screen-source` | `auto`\|`appium`, `auto` | `auto`: adb untuk device lokal + fallback Appium; `appium`: selalu Appium |
+| `--adb` | path, `adb` | Lokasi binary adb untuk live screen |
+| `--stream-interval` | float, `1.0` | Interval default live screen (clamp `0.3–10`) |
+
+Validasi: batas jeda harus memenuhi `0 <= min <= max`; hanya salah satu batas
+diisi → dashboard menolak start dengan exit code `2`.
+
+### 7.2 API Python
+
+```python
+from social_media_bot import SocialMediaBot, load_rack
+
+bot = SocialMediaBot(
+    host="127.0.0.1",
+    fast_mode=True,                  # capability + setting (§5)
+    action_delay_range=(1.0, 2.5),   # default jeda untuk aksi (§4)
+)
+bot.connect_devices(load_rack("rack-01.json"), max_workers=8)
+print(bot.fast_mode, bot.action_delay_range)   # True (1.0, 2.5)
+```
+
+`run_rack.py` juga menerima `--fast-mode` (koneksi CLI, tanpa dashboard).
+
+### 7.3 Yang **tidak** berubah
+
+- Isi manifest rack dan format `.state.json` tetap sama.
+- Endpoint HTTP tidak bertambah/berubah kontrak; hanya `status` yang kini
+  menyertakan blok `tuning`.
+- Payload `params` pada `/api/action` dan item pada `/api/bulk` tetap divalidasi
+  ketat; tidak ada field tuning baru di sana.
+
+## 8. Kompatibilitas & catatan perangkat
+
+| Skenario | Live screen | Fast mode | Delay tuning |
+| --- | --- | --- | --- |
+| HP USB di host dashboard | **adb** (3–8 fps), fallback Appium | berlaku | berlaku |
+| Emulator di host dashboard | **adb** (`emulator-5554`), fallback Appium | berlaku | berlaku |
+| HP fisik via Wi-Fi ADB di host dashboard | **adb**, bila serial ada di `adb devices` | berlaku | berlaku |
+| Device GADS remote (hub di mesin lain) | Appium | berlaku (session tetap dibuat di provider) | berlaku |
+| Dashboard dipindah dari host Appium | Appium (adb tidak melihat device) | berlaku untuk sesi dashboard | berlaku |
+
+Catatan:
+
+- Windows: `%*` pada `start-dashboard.bat` meneruskan flag, jadi
+  `start-dashboard.bat --fast-mode --action-delay-min 1 --action-delay-max 2.5`
+  valid. Bila `adb` tidak ada di `PATH`, pakai `--adb "C:\...\adb.exe"`.
+- Emulator: `adb exec-out screencap` jauh lebih cepat daripada lewat Appium,
+  tetapi aksi otomasi di emulator tetap lebih lambat daripada HP fisik
+  (hierarchy dump lebih berat).
+- GADS grid (`/grid`) dan endpoint per-device (`device/<id>/appium`) tidak
+  terpengaruh; tuning berjalan di sisi klien SocialMediaBot.
+
+## 9. Troubleshooting
+
+| Gejala | Kemungkinan sebab | Tindakan |
+| --- | --- | --- |
+| Live screen tetap ~1 fps walau `--screen-source auto` | Device tidak terlihat `adb devices` (remote/GADS) | Cek `adb -s <udid> get-state`; untuk device remote memang lewat Appium |
+| Live screen jadi hitam/error setelah beberapa saat | 5 kegagalan frame → stream ditutup | Buka ulang live screen; cek koneksi USB/Appium |
+| `--fast-mode` tapi `tuning.fast_mode` tetap `false` | Dashboard dijalankan tanpa flag / bot dibuat manual | Jalankan `dashboard.py --fast-mode`, atau `SocialMediaBot(fast_mode=True)` |
+| Aksi tetap lambat walau `fast_mode` aktif | Bottleneck bukan idle wait (jaringan, render app, atau jeda 3–7 s) | Turunkan `--action-delay-*` bertahap; ukur durasi per langkah |
+| Tap meleset setelah `fast_mode` | Wait animasi dimatikan | Matikan fast mode untuk device/platform itu, atau naikkan jeda antar langkah |
+| `dashboard.py` menolak start: `set both --action-delay-min ...` | Hanya satu batas diisi | Isi keduanya, atau hapus keduanya |
+| Log `Could not apply fast-mode ...` | Driver tidak mendukung `update_settings` | Sesi tetap jalan; update Appium/driver `uiautomator2` |
+
+## 10. Test & jaminan regresi
+
+Suite: `python3 -m unittest discover -s tests -v` → **218 test**, semuanya lulus.
+
+Test yang mengunci mekanisme baru:
+
+| Area | Test |
+| --- | --- |
+| Capability + setting fast mode, aplikasi saat reconnect, toleransi kegagalan, validasi `action_delay_range` | `FastModeTests` (`tests/test_social_media_bot.py`) |
+| Probe/capture adb, caching probe, output non-PNG, adb tidak ada | `AdbFrameGrabberTests` (`tests/test_dashboard.py`) |
+| Pemilihan sumber frame, fallback Appium, `screen_source=appium`, validasi nilai | `ScreenSourceTests` |
+| Injeksi `delay_range` pada action/bulk, default tetap, validasi | `ActionTuningTests` |
+| Flag CLI baru & validasinya | `PerfFlagTests` |
+
+Selain itu, 194 test lama (termasuk smoke test UI dashboard) tetap lulus tanpa
+perubahan, sehingga kontrak lama terjaga.
+
+## 11. Rekomendasi hybrid dengan GADS
+
+Live view GADS (MJPEG/WebRTC di sisi device) tetap yang paling halus untuk
+*melihat* dan mengontrol manual. Pola yang disarankan:
+
+1. **GADS** untuk memantau/mengontrol device secara manual saat butuh presisi.
+2. **SocialMediaBot** untuk aksi terjadwal (follow/post/comment/bulk/campaign),
+   dengan `--fast-mode` dan jeda yang sudah dituning.
+3. Kalau semua ingin di dashboard: `--screen-source auto --stream-interval 0.3
+   --fast-mode --action-delay-min 1 --action-delay-max 2.5` memberi perbaikan
+   paling terasa tanpa menyentuh GADS.
+
+## 12. Referensi kode
+
+| Bagian | Lokasi |
+| --- | --- |
+| Konstanta default jeda | `platforms/base.py` (`DEFAULT_DELAY_RANGE`, `FAST_DELAY_RANGE`) |
+| Loop frame + interval | `dashboard.py` (`DeviceStream`) |
+| Sumber frame adb | `dashboard.py` (`AdbFrameGrabber`, `PNG_SIGNATURE`, `ADB_MAX_FAILURES`) |
+| Pemilihan sumber + sharing stream | `dashboard.py` (`ScreenStreamManager`) |
+| Injeksi jeda | `dashboard.py` (`DashboardState._action_params`) |
+| Blok `tuning` di status | `dashboard.py` (`DashboardState.status`) |
+| Flag CLI | `dashboard.py` (`build_parser`) |
+| Fast mode bot | `social_media_bot.py` (`FAST_AUTOMATION_SETTINGS`, `_apply_fast_settings`, `_build_capabilities`) |
+| CLI koneksi | `run_rack.py` (`--fast-mode`) |
+
+Dokumen terkait: [README](README.md), [RUNBOOK](RUNBOOK.md),
+[RACK_SETUP](RACK_SETUP.md), [docs/appium-credentials.md](../../docs/appium-credentials.md).
+
+
+

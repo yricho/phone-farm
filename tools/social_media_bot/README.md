@@ -48,6 +48,7 @@ tools/social_media_bot/
 ├── run_rack.py                 # CLI: connect 1 rak dari manifest JSON
 ├── RACK_SETUP.md               # panduan fisik → ADB → Appium → dashboard
 ├── RUNBOOK.md                  # urutan singkat menjalankan farm harian
+├── PERFORMANCE.md              # cara kerja live screen adb, tuning jeda, fast mode
 ├── MVP_PRIORITIES.md           # prioritas P0/P1/P2 dan checklist rilis
 ├── MVP_ACCEPTANCE.md           # checklist acceptance device nyata
 ├── rack-01.example.json        # contoh manifest 20 HP (port 4723-4742)
@@ -869,6 +870,78 @@ membantu menyusun konfigurasi 20 HP secara eksplisit.
 - **Log**: satu logger untuk 20 HP bisa ramai. Gunakan
   `SocialMediaBot(logger=logging.getLogger("rack-01"))` dan format yang memuat
   nama device (log connect/disconnect sudah menyertakan UDID).
+
+## Mode cepat (tuning performa)
+
+Aplikasi ini selalu lebih lambat daripada kontrol manual di GADS — itu memang
+sifat Appium: setiap aksi adalah beberapa round-trip UiAutomator2, sementara
+GADS hanya streaming video + injeksi tap. Kalau terasa terlalu lambat, ada tiga
+tuas berikut (semuanya opsional, default tetap aman).
+
+> Detail mekanisme, alur frame, prioritas nilai, batasan, dan troubleshooting:
+> **[PERFORMANCE.md](PERFORMANCE.md)**.
+
+### 1. Live screen: `adb` alih-alih Appium (default `auto`)
+
+```bash
+python3 dashboard.py --manifest rack-01.json --screen-source auto --stream-interval 0.3
+```
+
+- `auto` (default) memakai `adb -s <udid> exec-out screencap -p` untuk HP/emulator
+  yang menempel di host dashboard, lalu **jatuh otomatis ke Appium** untuk device
+  remote (mis. device GADS). Tidak ada konfigurasi tambahan.
+- Keuntungannya bukan hanya fps lebih tinggi: screenshot Appium memakai server
+  UiAutomator2 yang sama dengan aksi, jadi polling live screen ikut memperlambat
+  posting/comment. Jalur adb sepenuhnya di luar itu.
+- `--screen-source appium` memaksa perilaku lama (semua frame lewat Appium).
+- `--stream-interval` minimum `0.3` detik. Untuk local device, `0.2–0.3` sudah
+  cukup halus.
+
+### 2. Capability performa: `--fast-mode`
+
+```bash
+python3 dashboard.py --manifest rack-01.json --fast-mode
+```
+
+Setara dengan `SocialMediaBot(fast_mode=True)`:
+
+- capability `appium:disableWindowAnimation` (animasi window dimatikan), dan
+- setting UiAutomator2 `waitForIdleTimeout=0` + `waitForSelectorTimeout=1000`
+  yang di-push setelah sesi dibuat.
+
+`waitForIdleTimeout` default-nya 10 detik dan ditunggu **sebelum setiap
+command**; di feed yang selalu beranimasi (Facebook/Instagram) ini penyebab
+utama aksi terasa menggantung. Risikonya: tap bisa terjadi sedikit lebih awal
+dari animasi selesai — uji dulu di satu HP sebelum seluruh rak.
+
+### 3. Jeda antar langkah: `--action-delay-min/--action-delay-max`
+
+```bash
+# default platform (3-7 detik per langkah, post = 4 langkah = 12-28 detik diam)
+python3 dashboard.py --manifest rack-01.json
+
+# lebih cepat, masih ada jeda manusiawi
+python3 dashboard.py --manifest rack-01.json \
+  --action-delay-min 1 --action-delay-max 2.5
+```
+
+Nilai ini diteruskan sebagai `delay_range` ke setiap aksi (follow/post/comment/
+like/save/reply), baik job tunggal, bulk, maupun campaign. Bisa juga diatur dari
+kode: `SocialMediaBot(action_delay_range=(1.0, 2.5))`.
+
+> Jeda 3–7 detik itu **disengaja untuk anti-ban**. Menurunkannya menaikkan
+> risiko checkpoint platform. Turunkan bertahap dan pantau akun.
+
+Nilai tuning yang aktif terlihat di `GET /api/status` pada blok `tuning`
+(`fast_mode`, `action_delay_range`, `screen_source`).
+
+### Rekomendasi hybrid dengan GADS
+
+Untuk hasil paling enak dilihat: **pakai GADS untuk live view/manual control**
+(MJPEG/WebRTC di sisi device, jauh lebih halus), sementara SocialMediaBot tetap
+menjalankan aksi terjadwal + live screen seperlunya. Kalau ingin semuanya di
+dashboard, kombinasi `--screen-source auto --stream-interval 0.3 --fast-mode`
+memberi perbaikan paling terasa tanpa menyentuh GADS.
 
 ## Catatan GADS
 

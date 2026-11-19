@@ -54,6 +54,8 @@ KEYCODE_ENTER = 66
 POLL_INTERVAL = 0.5
 OPTIONAL_TAB_TIMEOUT = 8.0
 DEFAULT_DELAY_RANGE = (3.0, 7.0)
+#: Faster, still human-ish pause range - handy when a flow feels too slow.
+FAST_DELAY_RANGE = (1.0, 2.5)
 
 Locator = Tuple[str, str]
 

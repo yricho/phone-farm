@@ -485,6 +485,86 @@ class SocialMediaBotTests(unittest.TestCase):
         self.assertEqual(len(self.bot), 0)
 
 
+class FastModeTests(unittest.TestCase):
+    """Fast mode capabilities and action delay tuning."""
+
+    def setUp(self):
+        self.created = []
+        patcher = mock.patch.object(
+            SocialMediaBot, "_create_driver", new=self._fake_create
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _fake_create(self, server_url, capabilities):
+        driver = FakeDriver()
+        driver.server_url = server_url
+        driver.capabilities = capabilities
+        driver.settings = []
+        driver.update_settings = driver.settings.append
+        self.created.append(driver)
+        return driver
+
+    def test_fast_mode_sets_animation_capability_and_settings(self):
+        bot = SocialMediaBot(fast_mode=True)
+        bot.connect_device("device-1", 4723)
+
+        caps = bot.get_connection("device-1").capabilities
+        self.assertTrue(caps["appium:disableWindowAnimation"])
+        self.assertTrue(bot.fast_mode)
+        self.assertEqual(
+            self.created[0].settings,
+            [dict(SocialMediaBot.FAST_AUTOMATION_SETTINGS)],
+        )
+
+    def test_default_mode_keeps_idle_waits(self):
+        bot = SocialMediaBot()
+        bot.connect_device("device-1", 4723)
+
+        caps = bot.get_connection("device-1").capabilities
+        self.assertNotIn("appium:disableWindowAnimation", caps)
+        self.assertFalse(bot.fast_mode)
+        self.assertEqual(self.created[0].settings, [])
+
+    def test_reconnect_reapplies_fast_settings(self):
+        bot = SocialMediaBot(fast_mode=True)
+        bot.connect_device("device-1", 4723)
+        bot.reconnect_device("device-1", attempts=1, delay=0)
+
+        self.assertEqual(len(self.created), 2)
+        for driver in self.created:
+            self.assertEqual(
+                driver.settings,
+                [dict(SocialMediaBot.FAST_AUTOMATION_SETTINGS)],
+            )
+
+    def test_settings_failure_keeps_the_session(self):
+        class RefusingDriver(FakeDriver):
+            def update_settings(self, settings):
+                raise RuntimeError("driver too old")
+
+        with mock.patch.object(
+            SocialMediaBot, "_create_driver", new=lambda *args: RefusingDriver()
+        ):
+            bot = SocialMediaBot(fast_mode=True)
+            with self.assertLogs(smb.__name__, level="DEBUG"):
+                driver = bot.connect_device("device-1", 4723)
+
+        self.assertIsNotNone(driver.session_id)
+        self.assertEqual(bot.device_ids, ("device-1",))
+
+    def test_action_delay_range_is_validated_and_exposed(self):
+        bot = SocialMediaBot(action_delay_range=(1.0, 2.5))
+
+        self.assertEqual(bot.action_delay_range, (1.0, 2.5))
+        self.assertIsNone(SocialMediaBot().action_delay_range)
+
+        for value in ((2.0, 1.0), (-1.0, 2.0), (1.0,), "fast", 5):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    SocialMediaBot(action_delay_range=value)
+
+
 @unittest.skipIf(smb.webdriver is None, "Appium-Python-Client is not installed")
 class RealAppiumOptionsTests(unittest.TestCase):
     """Guards the skeleton against API changes in Appium-Python-Client."""

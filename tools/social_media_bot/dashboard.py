@@ -46,6 +46,7 @@ from typing import (
     Mapping,
     Optional,
     Sequence,
+    Tuple,
     Union,
 )
 from urllib.parse import parse_qs, unquote, urlparse
@@ -100,6 +101,107 @@ def _short_error(message: Optional[str], limit: int = CONNECT_ERROR_LIMIT) -> st
     if len(text) <= limit:
         return text
     return text[: limit - 1].rstrip() + "…"
+
+
+#: Magic bytes every PNG frame starts with.
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+#: Consecutive adb failures before a stream stops trying the local path.
+ADB_MAX_FAILURES = 3
+
+
+def _validate_action_delay(
+    delay_range: Optional[Sequence[float]],
+) -> Optional[Tuple[float, float]]:
+    """Validate an ``(min, max)`` action pause range in seconds."""
+
+    if delay_range is None:
+        return None
+    try:
+        low, high = delay_range
+    except (TypeError, ValueError):
+        raise ValueError(
+            "action delay must be a (min, max) pair of seconds"
+        ) from None
+    low_value, high_value = float(low), float(high)
+    if low_value < 0 or high_value < 0 or low_value > high_value:
+        raise ValueError("action delay must satisfy 0 <= min <= max")
+    return (low_value, high_value)
+
+
+class AdbFrameGrabber:
+    """Grab live frames with ``adb exec-out screencap -p``.
+
+    Appium screenshots go through the UiAutomator2 server, so every frame costs
+    a full hierarchy round-trip *and* competes with the automation commands.
+    For devices attached to the dashboard host (USB phones, emulators) adb
+    screencap is several times faster and completely out of Appium's way.
+
+    Devices that are not attached locally - e.g. GADS remote devices - are
+    detected once and permanently fall back to Appium screenshots.
+    """
+
+    def __init__(
+        self, udid: str, *, adb: str = "adb", timeout: float = 5.0
+    ) -> None:
+        self.udid = udid
+        self._adb = adb
+        self._timeout = max(0.5, float(timeout))
+        self._available: Optional[bool] = None
+        self._failures = 0
+
+    @property
+    def available(self) -> bool:
+        """``True`` when adb reports the device as locally attached."""
+
+        if self._available is None:
+            self._available = self._probe()
+        return self._available
+
+    def _probe(self) -> bool:
+        try:
+            result = subprocess.run(
+                [self._adb, "-s", self.udid, "get-state"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=self._timeout,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return result.returncode == 0 and "device" in (result.stdout or "").strip()
+
+    def capture(self) -> Optional[bytes]:
+        """Return one PNG frame, or ``None`` when adb cannot provide it."""
+
+        if not self.available:
+            return None
+        try:
+            result = subprocess.run(
+                [self._adb, "-s", self.udid, "exec-out", "screencap", "-p"],
+                capture_output=True,
+                timeout=self._timeout,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return self._failed()
+        if result.returncode != 0:
+            return self._failed()
+        frame = result.stdout or b""
+        if not frame.startswith(PNG_SIGNATURE):
+            return self._failed()
+        self._failures = 0
+        return frame
+
+    def _failed(self) -> Optional[bytes]:
+        """Disable the adb path after repeated failures and fall back."""
+        self._failures += 1
+        if self._failures >= ADB_MAX_FAILURES:
+            self._available = False
+        return None
+
 
 LOGIN_PAGE = """<!doctype html>
 <html lang="id">
@@ -276,11 +378,16 @@ class DeviceStream:
     """One shared screenshot loop feeding any number of MJPEG subscribers."""
 
     def __init__(
-        self, udid: str, get_driver: Callable[[], Any], interval: float = 1.0
+        self,
+        udid: str,
+        get_driver: Callable[[], Any],
+        interval: float = 1.0,
+        frame_source: Optional[Callable[[], Optional[bytes]]] = None,
     ) -> None:
         self.udid = udid
         self._get_driver = get_driver
         self._interval = max(0.05, float(interval))
+        self._frame_source = frame_source
         self._condition = threading.Condition()
         self._subscribers = 0
         self._frame: Optional[bytes] = None
@@ -345,7 +452,12 @@ class DeviceStream:
             started = time.monotonic()
             frame: Optional[bytes] = None
             try:
-                frame = self._get_driver().get_screenshot_as_png()
+                if self._frame_source is not None:
+                    # Local devices: adb screencap, no Appium round-trip
+                    frame = self._frame_source()
+                if frame is None:
+                    # Remote devices, adb unavailable or adb failed
+                    frame = self._get_driver().get_screenshot_as_png()
             except Exception:  # device dropped or Appium is busy
                 self._failures += 1
             else:
@@ -370,6 +482,9 @@ class DeviceStream:
 class ScreenStreamManager:
     """Shares one capture loop per device between all connected viewers."""
 
+    #: Accepted values for ``screen_source``.
+    SOURCES = ("auto", "appium")
+
     def __init__(
         self,
         bot: Any,
@@ -377,13 +492,27 @@ class ScreenStreamManager:
         default_interval: float = 1.0,
         min_interval: float = 0.3,
         max_interval: float = 10.0,
+        screen_source: str = "auto",
+        adb: str = "adb",
     ) -> None:
         self.bot = bot
         self.default_interval = float(default_interval)
         self._min = float(min_interval)
         self._max = float(max_interval)
+        self.screen_source = self._validate_source(screen_source)
+        self._adb = adb
         self._streams: Dict[str, DeviceStream] = {}
         self._lock = threading.Lock()
+
+    @classmethod
+    def _validate_source(cls, screen_source: str) -> str:
+        value = str(screen_source or "auto").strip().lower()
+        if value not in cls.SOURCES:
+            raise ValueError(
+                f"screen_source must be one of {', '.join(cls.SOURCES)}, "
+                f"got {screen_source!r}"
+            )
+        return value
 
     def clamp_interval(self, interval: Any) -> float:
         if interval is None:
@@ -401,7 +530,10 @@ class ScreenStreamManager:
             if stream is None or stream.closed:
                 self.bot.get_driver(udid)  # raises when the device is offline
                 stream = DeviceStream(
-                    udid, lambda: self.bot.get_driver(udid), interval_value
+                    udid,
+                    lambda: self.bot.get_driver(udid),
+                    interval_value,
+                    frame_source=self._frame_source_for(udid),
                 )
                 stream.add_subscriber()
                 stream.start()
@@ -409,6 +541,16 @@ class ScreenStreamManager:
             else:
                 stream.add_subscriber()
             return stream
+
+    def _frame_source_for(
+        self, udid: str
+    ) -> Optional[Callable[[], Optional[bytes]]]:
+        """Return the adb frame grabber, or ``None`` to use Appium directly."""
+        if self.screen_source != "auto":
+            return None
+        # The probe runs lazily inside the stream thread, so opening a live view
+        # never blocks on adb (remote GADS devices are not attached locally).
+        return AdbFrameGrabber(udid, adb=self._adb).capture
 
     def release(self, stream: DeviceStream) -> None:
         with self._lock:
@@ -456,6 +598,9 @@ class DashboardState:
         stream_interval: float = 1.0,
         manifest_path: Optional[Union[str, Path]] = None,
         bot_factory: Optional[Callable[[str], Any]] = None,
+        action_delay_range: Optional[Sequence[float]] = None,
+        screen_source: str = "auto",
+        adb: str = "adb",
     ) -> None:
         self.bot = bot
         self.rack = rack
@@ -483,8 +628,16 @@ class DashboardState:
         if not self._platforms:
             raise ValueError("at least one platform adapter is required")
         self._default_platform = next(iter(self._platforms))
+        # Falls back to the bot default so `SocialMediaBot(action_delay_range=)`
+        # also applies to dashboard jobs.
+        if action_delay_range is None:
+            action_delay_range = getattr(bot, "action_delay_range", None)
+        self._action_delay_range = _validate_action_delay(action_delay_range)
         self.screen_streams = ScreenStreamManager(
-            bot, default_interval=stream_interval
+            bot,
+            default_interval=stream_interval,
+            screen_source=screen_source,
+            adb=adb,
         )
 
         self._lock = threading.RLock()
@@ -1334,7 +1487,7 @@ class DashboardState:
         def run_item(driver: Any, udid: str) -> Any:
             try:
                 self._consume_limit(platform_key, action, udid)
-                value = handler(driver, **item)
+                value = handler(driver, **self._action_params(action, item))
             except Exception:
                 self._record_analytics(platform_key, action, udid, False)
                 raise
@@ -1545,6 +1698,25 @@ class DashboardState:
             f"Campaign: {len(results)} platform(s), {ok} ok, {failed} failed",
         )
 
+    def _action_params(
+        self, action: str, params: Mapping[str, Any]
+    ) -> Dict[str, Any]:
+        """Copy action parameters and inject the configured pause range.
+
+        Platform adapters accept a ``delay_range`` keyword; manifests and the
+        UI do not need to know about it, so the tuning configured at startup is
+        applied here instead. An explicit ``delay_range`` always wins.
+        """
+
+        values = dict(params or {})
+        if (
+            self._action_delay_range is not None
+            and action in ACTION_FIELDS
+            and "delay_range" not in values
+        ):
+            values["delay_range"] = self._action_delay_range
+        return values
+
     def _do_action(self, payload: Dict[str, Any]) -> Any:
         platform_key = payload.get("platform", self._default_platform)
         adapter = self._platforms.get(platform_key)
@@ -1552,7 +1724,7 @@ class DashboardState:
             raise ValueError(f"unknown platform {platform_key!r}")
         action = payload["action"]
         target = payload["target"]
-        params = dict(payload["params"])
+        params = self._action_params(action, payload["params"])
         method_name = ACTION_METHODS.get(action)
         handler = getattr(adapter, method_name, None) if method_name else None
         if not callable(handler):
@@ -1700,6 +1872,15 @@ class DashboardState:
                 for adapter in self._platforms.values()
             ],
             "default_platform": self._default_platform,
+            "tuning": {
+                "fast_mode": bool(getattr(self.bot, "fast_mode", False)),
+                "action_delay_range": (
+                    list(self._action_delay_range)
+                    if self._action_delay_range
+                    else None
+                ),
+                "screen_source": self.screen_streams.screen_source,
+            },
             "devices": devices,
             "jobs": jobs,
             "server_time": time.time(),
@@ -2637,7 +2818,49 @@ def build_parser() -> argparse.ArgumentParser:
         "--stream-interval",
         type=float,
         default=1.0,
-        help="Screenshot interval (seconds) for live screen streams",
+        help=(
+            "Screenshot interval (seconds) for live screen streams. Lower is "
+            "smoother; 0.3 is the floor. Local devices stream through adb and "
+            "handle shorter intervals better than Appium"
+        ),
+    )
+    parser.add_argument(
+        "--screen-source",
+        choices=list(ScreenStreamManager.SOURCES),
+        default="auto",
+        help=(
+            "Live screen frame source: 'auto' uses `adb exec-out screencap` for "
+            "locally attached devices and Appium for remote ones, 'appium' "
+            "always uses Appium screenshots"
+        ),
+    )
+    parser.add_argument(
+        "--adb",
+        default="adb",
+        help="Path to the adb executable used by the live screen (default: adb)",
+    )
+    parser.add_argument(
+        "--fast-mode",
+        action="store_true",
+        help=(
+            "Disable UiAutomator2 idle waits and window animations. Noticeably "
+            "faster actions on animated feeds (Facebook/Instagram)"
+        ),
+    )
+    parser.add_argument(
+        "--action-delay-min",
+        type=float,
+        default=None,
+        help=(
+            "Minimum pause (seconds) between action steps. Default keeps the "
+            "platform value (3 s); try 1.0 with --action-delay-max 2.5"
+        ),
+    )
+    parser.add_argument(
+        "--action-delay-max",
+        type=float,
+        default=None,
+        help="Maximum pause (seconds) between action steps (default: 7 s)",
     )
     parser.add_argument(
         "--client-secret",
@@ -2676,6 +2899,21 @@ def _local_ipv4_addresses() -> List[str]:
     )
 
 
+def _action_delay_from_args(
+    args: argparse.Namespace,
+) -> Optional[Tuple[float, float]]:
+    """Build the configured action pause range from CLI arguments."""
+
+    low, high = args.action_delay_min, args.action_delay_max
+    if low is None and high is None:
+        return None
+    if low is None or high is None:
+        raise ValueError(
+            "set both --action-delay-min and --action-delay-max (or neither)"
+        )
+    return _validate_action_delay((low, high))
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     configure_stdio()
     args = build_parser().parse_args(argv)
@@ -2685,6 +2923,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "atau env GADS_DASHBOARD_TOKEN.",
             file=sys.stderr,
         )
+        return 2
+    try:
+        action_delay = _action_delay_from_args(args)
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
         return 2
     logging.basicConfig(
         level=logging.INFO,
@@ -2715,6 +2958,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             host=host,
             client_secret=args.client_secret,
             max_workers=args.workers,
+            fast_mode=args.fast_mode,
+            action_delay_range=action_delay,
         )
 
     bot = make_bot(args.appium_host or rack.host or "127.0.0.1")
@@ -2725,6 +2970,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         stream_interval=args.stream_interval,
         manifest_path=args.manifest,
         bot_factory=make_bot,
+        action_delay_range=action_delay,
+        screen_source=args.screen_source,
+        adb=args.adb,
     )
 
     try:
