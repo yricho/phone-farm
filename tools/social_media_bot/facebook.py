@@ -70,6 +70,8 @@ POLL_INTERVAL = 0.5
 OPTIONAL_TAB_TIMEOUT = 8.0
 #: Seconds to wait for the composer editor before tapping the composer again.
 EDITOR_FIRST_WAIT = 8.0
+#: Seconds to wait for the composer entry before recovering the feed.
+COMPOSER_FIRST_WAIT = 5.0
 #: Random pause inserted between steps, in seconds.
 DEFAULT_DELAY_RANGE = (3.0, 7.0)
 
@@ -219,10 +221,12 @@ def create_post(
         _wait_for_foreground(driver, package, timeout, log)
         _pause(low, high, log, "opening Facebook")
 
-        composer = _wait_for_any(
-            driver, _composer_prompt_locators(), timeout, "the post composer"
-        )
-        editor = _open_post_composer(driver, composer, timeout, low, high, log)
+        editor = _reuse_open_composer(driver, timeout, log)
+        if editor is None:
+            composer = _open_post_composer_entry(
+                driver, package, timeout, low, high, log
+            )
+            editor = _open_post_composer(driver, composer, timeout, low, high, log)
         # Newer Facebook builds open a separate "Buat postingan baru" screen where
         # the field is not focused yet: tap it first, otherwise send_keys goes to
         # the page instead of the text field.
@@ -597,6 +601,8 @@ def _wait_for_any(
     locators: Sequence[Locator],
     timeout: float,
     description: str,
+    *,
+    required: bool = True,
 ) -> Any:
     deadline = time.monotonic() + timeout
     while True:
@@ -604,6 +610,8 @@ def _wait_for_any(
         if element is not None:
             return element
         if time.monotonic() >= deadline:
+            if not required:
+                return None
             raise FacebookAutomationError(
                 f"Timed out after {timeout:.0f}s waiting for {description}"
             )
@@ -786,7 +794,9 @@ def _open_post_composer(
     case the element found as "composer" *is* the post editor. That case is
     recovered through the focused element, otherwise the editor would be tapped
     and then excluded from the search, ending in ``Timed out ... waiting for the
-    post editor``.
+    post editor``. When the composer entry itself is missing (feed scrolled away,
+    popup on screen, app on another tab) the flow returns to the feed with an
+    ``fb://feed`` deep link, dismisses common popups and scrolls to the top.
     """
 
     _tap_element(driver, composer, logger)
@@ -836,6 +846,169 @@ def _open_post_composer(
             f"Timed out after {timeout:.0f}s waiting for the post editor"
         )
     return editor
+
+
+def _reuse_open_composer(
+    driver: Any, timeout: float, logger: logging.Logger
+) -> Any:
+    """Return the editor when Facebook is already showing the composer screen."""
+
+    if not _composer_screen_open(driver):
+        return None
+    editor = _wait_for_editor(
+        driver,
+        _composer_editor_locators(),
+        0.0,
+        "the post editor",
+        required=False,
+    )
+    if editor is not None:
+        logger.info(
+            "Facebook: reusing the composer screen left open by an earlier run"
+        )
+    return editor
+
+
+def _open_post_composer_entry(
+    driver: Any,
+    package: str,
+    timeout: float,
+    low: float,
+    high: float,
+    logger: logging.Logger,
+) -> Any:
+    """Return the element that opens the post composer.
+
+    Facebook can be left on the composer/audience screen by a previous run, its
+    feed can be scrolled away, or a popup can cover the composer. When the entry
+    is not visible the flow returns to the feed, dismisses common popups and
+    scrolls up before giving up, so a stale screen does not turn into an
+    immediate timeout.
+    """
+
+    deadline = time.monotonic() + timeout
+    composer = _wait_for_composer_entry(
+        driver, deadline, min(COMPOSER_FIRST_WAIT, timeout)
+    )
+    if composer is not None:
+        return composer
+
+    if time.monotonic() < deadline:
+        logger.info("Facebook: composer not visible; returning to the feed")
+        _return_to_feed(driver, package, low, high, logger)
+        _dismiss_popups(driver, logger)
+        composer = _wait_for_composer_entry(
+            driver, deadline, min(COMPOSER_FIRST_WAIT, timeout)
+        )
+        if composer is not None:
+            return composer
+
+    if time.monotonic() < deadline:
+        logger.info("Facebook: scrolling the feed to the top")
+        _scroll_to_top(driver, logger)
+        composer = _wait_for_composer_entry(driver, deadline, timeout)
+        if composer is not None:
+            return composer
+
+    raise FacebookAutomationError(
+        f"Timed out after {timeout:.0f}s waiting for the post composer"
+    )
+
+
+def _wait_for_composer_entry(
+    driver: Any, deadline: float, max_wait: float
+) -> Any:
+    """Poll the composer entry locators until *deadline* or *max_wait*."""
+
+    end = min(deadline, time.monotonic() + max(0.0, max_wait))
+    while True:
+        entry = _find_displayed(driver, _composer_prompt_locators())
+        if entry is not None:
+            return entry
+        if time.monotonic() >= end:
+            return None
+        time.sleep(POLL_INTERVAL)
+
+
+def _return_to_feed(
+    driver: Any,
+    package: str,
+    low: float,
+    high: float,
+    logger: logging.Logger,
+) -> None:
+    """Bring Facebook back to the home feed with an ``fb://`` deep link."""
+
+    for url in ("fb://feed", "fb://home"):
+        try:
+            _open_url(driver, url, package, logger)
+        except FacebookAutomationError:
+            logger.debug("Could not open %s", url, exc_info=True)
+            continue
+        try:
+            _wait_for_foreground(driver, package, 5.0, logger)
+        except FacebookAutomationError:
+            logger.debug("Facebook did not report the foreground state", exc_info=True)
+        _pause(low, high, logger, "returning to the feed")
+        return
+    logger.warning("Facebook: could not return to the feed with a deep link")
+
+
+#: Buttons of common Facebook popups that cover the composer.
+_DISMISS_LABELS = (
+    "Nanti",
+    "Bukan sekarang",
+    "Nanti saja",
+    "Not now",
+    "No thanks",
+    "Tidak, terima kasih",
+    "Skip",
+    "Lewati",
+)
+
+
+def _dismiss_popups(driver: Any, logger: logging.Logger) -> None:
+    """Tap away common "not now"-style popups that hide the feed composer."""
+
+    for label in _DISMISS_LABELS:
+        element = _find_displayed(
+            driver,
+            [
+                (BY_XPATH, f'//*[@text="{label}"]'),
+                (BY_ACCESSIBILITY_ID, label),
+            ],
+        )
+        if element is not None and _tap_element(driver, element, logger):
+            logger.info("Facebook: dismissed a popup (%s)", label)
+
+
+def _scroll_to_top(driver: Any, logger: logging.Logger, swipes: int = 2) -> None:
+    """Swipe down a couple of times so the feed composer is back on screen."""
+
+    get_size = getattr(driver, "get_window_size", None)
+    if not callable(get_size):
+        return
+    try:
+        size = get_size()
+        width = int(size.get("width", 0))
+        height = int(size.get("height", 0))
+    except Exception:
+        logger.debug("Could not read the window size", exc_info=True)
+        return
+    if width <= 0 or height <= 0:
+        return
+    swipe = getattr(driver, "swipe", None)
+    if not callable(swipe):
+        return
+    center = width // 2
+    start_y = max(1, int(height * 0.25))
+    end_y = max(start_y + 1, int(height * 0.8))
+    for _ in range(max(0, swipes)):
+        try:
+            swipe(center, start_y, center, end_y, 300)
+        except Exception:
+            logger.debug("Could not scroll the feed", exc_info=True)
+            return
 
 
 def _active_editor(driver: Any, expected: Any = None) -> Any:
@@ -1198,7 +1371,44 @@ _COMPOSER_PROMPTS = (
     "What's on your mind",
     "Apa yang Anda pikirkan",
     "Apa yang ada di pikiran",
+    "Bagikan sesuatu",
+    "Tulis sesuatu",
+    "Tulis postingan",
+    "Share something",
+    "Write something",
+    "Buat postingan",
+    "Create post",
 )
+
+#: Titles of the full-screen composer ("Postingan baru" / "Buat postingan baru").
+_COMPOSER_SCREEN_MARKERS = (
+    "Buat postingan baru",
+    "Postingan baru",
+    "Create post",
+    "New post",
+)
+
+
+def _composer_screen_locators() -> List[Locator]:
+    locators: List[Locator] = []
+    for marker in _COMPOSER_SCREEN_MARKERS:
+        escaped = _escape_uiautomator(marker)
+        locators.append(
+            (BY_ANDROID_UIAUTOMATOR, f'new UiSelector().textContains("{escaped}")')
+        )
+        locators.append(
+            (
+                BY_ANDROID_UIAUTOMATOR,
+                f'new UiSelector().descriptionContains("{escaped}")',
+            )
+        )
+    return locators
+
+
+def _composer_screen_open(driver: Any) -> bool:
+    """True when Facebook already shows the full-screen post composer."""
+
+    return _find_displayed(driver, _composer_screen_locators()) is not None
 
 
 def _composer_prompt_locators() -> List[Locator]:
@@ -1212,6 +1422,16 @@ def _composer_prompt_locators() -> List[Locator]:
             (
                 BY_ANDROID_UIAUTOMATOR,
                 f'new UiSelector().descriptionContains("{escaped}")',
+            )
+        )
+
+    # Resource ids used by the feed composer pill on several builds.
+    for hint in ("feed_composer", "composer_pill"):
+        escaped = _escape_uiautomator(hint)
+        locators.append(
+            (
+                BY_ANDROID_UIAUTOMATOR,
+                f'new UiSelector().resourceIdMatches(".*{escaped}.*")',
             )
         )
 

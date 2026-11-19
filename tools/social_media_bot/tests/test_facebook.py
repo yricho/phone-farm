@@ -124,6 +124,13 @@ class FakeDriver:
         self.script_error = None
         self.switch_to = FakeSwitchTo()
         self.page_source = ""
+        self.swipes = []
+
+    def get_window_size(self):
+        return {"width": 1080, "height": 2400}
+
+    def swipe(self, start_x, start_y, end_x, end_y, duration):
+        self.swipes.append((start_x, start_y, end_x, end_y, duration))
 
     def activate_app(self, package):
         self.activated.append(package)
@@ -766,6 +773,130 @@ class CreatePostTests(unittest.TestCase):
             create_post(driver, "Halo", timeout=0.05)
 
         self.assertIn("post composer", str(ctx.exception))
+
+    def test_create_post_reuses_a_composer_screen_left_open(self):
+        title = FakeElement(text="Postingan baru", element_id="title-node")
+        editor = FakeElement(
+            text="Apa yang Anda pikirkan?",
+            class_name="android.widget.EditText",
+            resource_id="com.facebook.katana:id/composer_edit_text",
+            element_id="editor-node",
+        )
+        button = FakeElement(
+            text="Posting",
+            content_desc="Posting",
+            class_name="android.widget.Button",
+            element_id="post-button",
+        )
+        driver = FakeDriver([title, editor, button])
+
+        result = create_post(driver, "Halo dari draf")
+
+        self.assertTrue(result.posted)
+        self.assertEqual(editor.text, "Halo dari draf")
+        self.assertEqual(button.clicked, 1)
+        # The composer was already open, so there was no need to reset the feed.
+        self.assertFalse(
+            any(script == "mobile: deepLink" for script, _args in driver.scripts)
+        )
+
+    def test_create_post_returns_to_the_feed_when_the_composer_is_missing(self):
+        prompt = FakeElement(
+            text="Apa yang Anda pikirkan?",
+            displayed=False,
+            element_id="prompt-node",
+        )
+        editor = FakeElement(
+            class_name="android.widget.EditText", element_id="editor-node"
+        )
+        button = FakeElement(
+            text="Posting",
+            content_desc="Posting",
+            class_name="android.widget.Button",
+            element_id="post-button",
+        )
+
+        class FeedAfterDeepLink(FakeDriver):
+            def execute_script(self, script, args=None):
+                super().execute_script(script, args)
+                if (
+                    script == "mobile: deepLink"
+                    and (args or {}).get("url") == "fb://feed"
+                ):
+                    prompt.displayed = True
+
+        driver = FeedAfterDeepLink([prompt, editor, button])
+
+        with mock.patch.object(facebook, "COMPOSER_FIRST_WAIT", 0.02):
+            result = create_post(driver, "Halo feed", timeout=0.5)
+
+        self.assertTrue(result.posted)
+        self.assertIn(
+            ("mobile: deepLink", {"url": "fb://feed", "package": "com.facebook.katana", "waitForLaunch": True}),
+            driver.scripts,
+        )
+        self.assertEqual(editor.text, "Halo feed")
+
+    def test_create_post_scrolls_the_feed_when_the_composer_is_off_screen(self):
+        prompt = FakeElement(
+            text="What's on your mind, Tester?",
+            displayed=False,
+            element_id="prompt-node",
+        )
+        editor = FakeElement(
+            class_name="android.widget.EditText", element_id="editor-node"
+        )
+        button = FakeElement(
+            text="Post",
+            content_desc="Post",
+            class_name="android.widget.Button",
+            element_id="post-button",
+        )
+
+        class RevealAfterSwipe(FakeDriver):
+            def swipe(self, start_x, start_y, end_x, end_y, duration):
+                super().swipe(start_x, start_y, end_x, end_y, duration)
+                prompt.displayed = True
+
+        driver = RevealAfterSwipe([prompt, editor, button])
+
+        with mock.patch.object(facebook, "COMPOSER_FIRST_WAIT", 0.02):
+            result = create_post(driver, "Halo scroll", timeout=0.5)
+
+        self.assertTrue(result.posted)
+        self.assertTrue(driver.swipes)
+        self.assertEqual(editor.text, "Halo scroll")
+
+    def test_create_post_dismisses_a_popup_covering_the_composer(self):
+        prompt = FakeElement(
+            text="Apa yang Anda pikirkan?",
+            displayed=False,
+            element_id="prompt-node",
+        )
+        editor = FakeElement(
+            class_name="android.widget.EditText", element_id="editor-node"
+        )
+        button = FakeElement(
+            text="Posting",
+            content_desc="Posting",
+            class_name="android.widget.Button",
+            element_id="post-button",
+        )
+
+        class DismissPopup(FakeElement):
+            def click(self):
+                super().click()
+                prompt.displayed = True
+
+        popup = DismissPopup(text="Nanti", element_id="popup-node")
+        driver = FakeDriver([popup, prompt, editor, button])
+
+        with mock.patch.object(facebook, "COMPOSER_FIRST_WAIT", 0.02):
+            result = create_post(driver, "Halo popup", timeout=0.5)
+
+        self.assertTrue(result.posted)
+        self.assertEqual(popup.clicked, 1)
+        self.assertEqual(editor.text, "Halo popup")
 
     def test_create_post_raises_when_composer_is_missing(self):
         elements, _refs = build_composer_elements(with_prompt=False)

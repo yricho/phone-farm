@@ -471,13 +471,16 @@ Parameter `create_post`:
 Alur yang dijalankan:
 
 1. `activate_app` + tunggu app foreground
-2. tap composer `What's on your mind` / `Apa yang Anda pikirkan` /
-   `Apa yang ada di pikiran`
+2. cari pill composer `What's on your mind` / `Apa yang Anda pikirkan` /
+   `Bagikan sesuatu` / `Tulis sesuatu` / `Buat postingan` / `Create post`.
+   Kalau layar composer dari percobaan sebelumnya masih terbuka, field-nya
+   langsung dipakai; kalau pill tidak terlihat, bot membuka **`fb://feed`**,
+   menutup popup “Nanti”/“Not now”, lalu scroll feed ke atas sebelum menyerah —
+   jadi layar sisa run sebelumnya tidak langsung jadi timeout 20 detik.
 3. tunggu editor muncul (build baru membuka halaman terpisah
    **“Postingan baru” / “Buat postingan baru”**), lalu **tap field tersebut**
    agar fokus. Kalau editor belum muncul, composer di-tap ulang dan field yang
-   sedang fokus dipakai (mis. app masih di layar composer sisa percobaan
-   sebelumnya), jadi langkah ini tidak langsung timeout 20 detik.
+   sedang fokus dipakai, jadi langkah ini juga tidak langsung timeout.
 4. ketik `post_text` di editor
 5. sembunyikan keyboard bila perlu
 6. tombol final `Post` / `Posting` / `Bagikan` / `Kirim` / `Share`, termasuk
@@ -1110,7 +1113,9 @@ aksi massal, reconnect, parsing manifest (termasuk UTF-8 BOM), alur `follow_user
 argumen, delay acak 3–7 detik), alur `create_post` (happy path, label Indonesia,
 multiline, tombol Post hilang, validasi teks, delay acak, bounds pill/editor
 identik, layar composer sudah terbuka, tap composer diulang, label tombol
-terbungkus + tap koordinat, editor berbasis `View`, auto UI dump saat gagal), alur
+terbungkus + tap koordinat, editor berbasis `View`, auto UI dump saat gagal,
+reuse layar composer sisa run, deep link `fb://feed` saat pill hilang, scroll
+feed ke atas, dismiss popup), alur
 `comment_on_post` (deep link, kotak komentar tersembunyi, label Indonesia,
 fallback IME/Enter, URL gagal dibuka, foreground gagal, validasi, delay acak),
 registry & capability 5 platform (Instagram, Threads, X, TikTok), flow
