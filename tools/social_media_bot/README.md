@@ -484,7 +484,10 @@ Alur yang dijalankan:
    agar fokus. Kalau editor belum muncul, composer di-tap ulang dan field yang
    sedang fokus dipakai, jadi langkah ini juga tidak langsung timeout.
 4. ketik `post_text` di editor
-5. sembunyikan keyboard bila perlu
+5. kalau build Facebook membuka **layar teks terpisah**, tap tombol
+   **`Selesai`** / **`Done`** di kanan atas untuk mengunci teks (keyboard tidak
+   ditutup dengan Back dulu supaya layar teks tidak ikut tertutup). Kalau
+   tombol itu tidak ada, keyboard disembunyikan seperti biasa.
 6. tombol final `Post` / `Posting` / `Bagikan` / `Kirim` / `Share`, termasuk
    label terbungkus (`Posting sekarang`, `Posting sebagai …`). Judul layar
    `Postingan baru` tidak pernah dianggap tombol. Kandidat yang
@@ -1156,7 +1159,8 @@ identik, layar composer sudah terbuka, tap composer diulang, label tombol
 terbungkus + tap koordinat, editor berbasis `View`, auto UI dump saat gagal,
 reuse layar composer sisa run, deep link `fb://feed` saat pill hilang, scroll
 feed ke atas, dismiss popup, wake screen, retry sekali sebelum submit, tidak
-retry setelah tombol Post, konteks device di pesan error), alur
+retry setelah tombol Post, konteks device di pesan error, tap `Selesai`/`Done`
+di layar teks), alur
 `comment_on_post` (deep link, kotak komentar tersembunyi, label Indonesia,
 fallback IME/Enter, URL gagal dibuka, foreground gagal, validasi, delay acak),
 registry & capability 5 platform (Instagram, Threads, X, TikTok), flow

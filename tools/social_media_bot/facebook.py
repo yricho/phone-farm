@@ -295,7 +295,16 @@ def _publish_post(
     editor.send_keys(text)
     _pause(low, high, logger, "typing the post")
 
-    _hide_keyboard(driver, logger)
+    # Some Facebook builds open a dedicated text screen: the top-right
+    # "Selesai"/"Done" button must be tapped to commit the text before the
+    # audience/Next screen (and the Post button) becomes available. Hiding the
+    # keyboard first could dismiss that screen, so check for it before.
+    done_button = _find_button(driver, _done_button_locators())
+    if done_button is not None:
+        _tap_element(driver, done_button, logger)
+        _pause(low, high, logger, "finishing the post text")
+    else:
+        _hide_keyboard(driver, logger)
 
     # Facebook 588+ uses a two step composer: "Postingan baru" -> Berikutnya
     # -> audience screen -> final Posting/Post. Older builds publish straight
@@ -1698,6 +1707,32 @@ def _next_button_locators() -> List[Locator]:
             (
                 BY_ANDROID_UIAUTOMATOR,
                 f'new UiSelector().textContains("{label}")',
+            )
+        )
+    return locators
+
+
+#: Top-right button of the dedicated text screen; the text is only committed
+#: after tapping it, before the audience/Next screen becomes available.
+_DONE_BUTTON_LABELS = ("Selesai", "Done")
+
+
+def _done_button_locators() -> List[Locator]:
+    locators: List[Locator] = []
+    for label in _DONE_BUTTON_LABELS:
+        escaped = _escape_uiautomator(label)
+        locators.append((BY_XPATH, f'//*[@text="{label}"]'))
+        locators.append((BY_ACCESSIBILITY_ID, label))
+        locators.append(
+            (
+                BY_ANDROID_UIAUTOMATOR,
+                f'new UiSelector().textStartsWith("{escaped}")',
+            )
+        )
+        locators.append(
+            (
+                BY_ANDROID_UIAUTOMATOR,
+                f'new UiSelector().descriptionStartsWith("{escaped}")',
             )
         )
     return locators

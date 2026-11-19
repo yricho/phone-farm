@@ -571,6 +571,54 @@ class CreatePostTests(unittest.TestCase):
         self.assertEqual(final_button.clicked, 1)
         self.assertEqual(editor.text, "Halo dua langkah")
 
+    def test_create_post_taps_done_on_a_dedicated_text_screen(self):
+        class RevealOnClick(FakeElement):
+            def __init__(self, targets, **kwargs):
+                super().__init__(**kwargs)
+                self.targets = targets
+
+            def click(self):
+                super().click()
+                for target in self.targets:
+                    target.displayed = True
+
+        editor = FakeElement(class_name="android.widget.EditText")
+        final_button = FakeElement(
+            text="Posting",
+            content_desc="Posting",
+            class_name="android.widget.Button",
+            displayed=False,
+        )
+        next_button = RevealOnClick(
+            [final_button],
+            text="Berikutnya",
+            content_desc="Berikutnya",
+            class_name="android.widget.Button",
+        )
+        next_button.displayed = False
+        done_button = RevealOnClick(
+            [next_button],
+            text="Selesai",
+            content_desc="Selesai",
+            class_name="android.widget.Button",
+        )
+        feed_prompt = FakeElement(text="Apa yang Anda pikirkan?")
+        driver = FakeDriver(
+            [feed_prompt, editor, done_button, next_button, final_button]
+        )
+
+        result = create_post(driver, "Halo selesai")
+
+        self.assertTrue(result.posted)
+        self.assertEqual(result.button_text, "Posting")
+        self.assertEqual(done_button.clicked, 1)
+        self.assertEqual(next_button.clicked, 1)
+        self.assertEqual(final_button.clicked, 1)
+        self.assertEqual(editor.text, "Halo selesai")
+        # The Done tap commits the text; the keyboard is never dismissed with
+        # Back first, which could close the text screen and lose the input.
+        self.assertEqual(driver.keyboard_hidden, 0)
+
     def test_create_post_preserves_multiline_text(self):
         elements, refs = build_composer_elements()
         driver = FakeDriver(elements)
