@@ -795,6 +795,34 @@ Respons berisi `ok`, `muted`, plus `method` (`adb`/`appium`) dan `volume` bila
 tersedia. Device offline → `409`; body tidak valid → `400`; gagal di
 driver/adb → `502`.
 
+### Generate teks post
+
+Tombol **Generate** di bawah field *Post text* (aksi `post`) dan di form
+**Campaign** mengisi teks dengan kata-kata harian acak, misalnya:
+
+> Ngopi dulu sebelum mulai kerja. Hal kecil begini yang bikin bahagia. ☀️
+
+- Dibuat lokal oleh [`post_generator.py`](post_generator.py) dari kumpulan
+  frasa: tanpa internet dan tanpa API key.
+- Menyesuaikan waktu (pagi/siang/sore/malam) dan hari (Senin, Jumat, akhir
+  pekan). Aktivitas yang melelahkan (macet, begadang) mendapat perasaan dan
+  emoji yang cocok. Kadang ditambah pertanyaan ke teman, emoji, atau hashtag.
+- Teks yang baru dibuat tidak diulang dalam 100 generate terakhir. Teks tetap
+  bisa diedit sebelum **Jalankan**; kalau field sudah berisi, dashboard
+  meminta konfirmasi sebelum menimpanya.
+- **Teks acak berbeda per HP**: centang opsi ini di bawah field *Post text*
+  (aksi `post`). Field teks dinonaktifkan dan server membuat teks baru untuk
+  **setiap HP saat aksi dijalankan**, jadi target *All connected devices*
+  dengan 20 HP menghasilkan 20 postingan berbeda, bukan 20 teks identik yang
+  mudah dianggap spam. Teks yang dipakai tiap HP tercatat di Activity log
+  (`Random post text for <udid>: ...`) dan di hasil job. Jadwal dan **Retry**
+  juga membuat teks baru. API: `POST /api/action` dengan
+  `{"action": "post", "target": "all", "params": {}, "text_mode": "random"}`.
+- API: `GET /api/generate/post-text?count=1..50` →
+  `{"text": "...", "texts": ["...", ...]}`.
+- Frasa bisa ditambah/diubah langsung di `post_generator.py`
+  (`_ACTIVITIES`, `_FEELINGS`, `_QUESTIONS`, `_REFLECTIONS`).
+
 ### Close apps
 
 Tombol **Close apps** di topbar (semua HP terhubung) dan di panel live (satu HP)

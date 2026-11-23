@@ -80,6 +80,10 @@
     <symbol id="icon-x" viewBox="0 0 24 24">
       <path d="M6 6l12 12M18 6 6 18"></path>
     </symbol>
+    <symbol id="icon-sparkle" viewBox="0 0 24 24">
+      <path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3Z"></path>
+      <path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8L19 15Z"></path>
+    </symbol>
     <symbol id="icon-play" viewBox="0 0 24 24">
       <path d="M8 5.5v13l10-6.5-10-6.5Z"></path>
     </symbol>
@@ -565,6 +569,20 @@
                 <div id="field-text-wrap" class="field">
                   <label for="field-text" id="field-text-label">Text</label>
                   <textarea id="field-text" rows="4" placeholder="Tulis teks…"></textarea>
+                  <div id="field-text-actions" class="field-actions">
+                    <span class="hint">Teks harian acak, bisa diedit sebelum dijalankan.</span>
+                    <button id="generate-post-text" class="btn btn-ghost btn-small" type="button"
+                            title="Isi dengan kata-kata harian acak">
+                      <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-sparkle"></use></svg>
+                      <span>Generate</span>
+                    </button>
+                  </div>
+                  <label id="field-text-random-wrap" class="check-row" for="field-text-random">
+                    <input id="field-text-random" type="checkbox">
+                    <span>Teks acak berbeda per HP
+                      <small>Tiap HP dapat teks harian sendiri saat aksi dijalankan.</small>
+                    </span>
+                  </label>
                 </div>
 
                 <button id="action-submit" class="btn btn-primary btn-block" type="submit">
@@ -595,6 +613,14 @@
                 <label for="campaign-text">Teks post</label>
                 <textarea id="campaign-text" rows="4"
                           placeholder="Teks yang dikirim ke semua platform terpilih…"></textarea>
+                <div class="field-actions">
+                  <span class="hint">Teks harian acak, bisa diedit.</span>
+                  <button id="generate-campaign-text" class="btn btn-ghost btn-small" type="button"
+                          title="Isi dengan kata-kata harian acak">
+                    <svg class="btn-icon" aria-hidden="true" focusable="false"><use href="#icon-sparkle"></use></svg>
+                    <span>Generate</span>
+                  </button>
+                </div>
 
                 <label for="campaign-target">Target</label>
                 <select id="campaign-target">

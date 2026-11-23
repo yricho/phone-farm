@@ -402,6 +402,62 @@ class DashboardStateTests(unittest.TestCase):
         )
         self.assertEqual(self.bot.run_calls, [])
 
+    def test_random_text_posts_a_different_text_per_device(self):
+        self.bot.connect_devices(self.rack)
+
+        job = self.state.submit_action(
+            "post", "all", {"text": "ignored"}, text_mode="random"
+        )
+        done = wait_job(self.state, job["id"])
+
+        self.assertEqual(done["status"], "succeeded")
+        self.assertIn("teks acak per HP", done["label"])
+        texts = [
+            device["result"]["post_text"]
+            for device in done["result"]["devices"].values()
+        ]
+        self.assertEqual(len(texts), 4)
+        self.assertEqual(len(set(texts)), 4)
+        self.assertNotIn("ignored", texts)
+        self.assertTrue(all(text.strip() for text in texts))
+
+    def test_random_text_needs_no_text_and_works_on_one_device(self):
+        self.bot.connect_devices(self.rack)
+
+        job = self.state.submit_action("post", "d2", {}, text_mode="random")
+        done = wait_job(self.state, job["id"])
+
+        self.assertEqual(done["status"], "succeeded")
+        self.assertTrue(done["result"]["devices"]["d2"]["result"]["post_text"])
+
+    def test_random_text_is_regenerated_on_retry(self):
+        self.bot.connect_devices(self.rack)
+        job = self.state.submit_action("post", "d0", {}, text_mode="random")
+        first = wait_job(self.state, job["id"])
+
+        payload = self.state._jobs[job["id"]]["payload"]
+        self.assertEqual(payload["text_mode"], "random")
+        self.assertEqual(payload["params"], {})
+        again = self.state.submit_action("post", "d0", {}, text_mode="random")
+        second = wait_job(self.state, again["id"])
+        self.assertNotEqual(
+            first["result"]["devices"]["d0"]["result"]["post_text"],
+            second["result"]["devices"]["d0"]["result"]["post_text"],
+        )
+
+    def test_random_text_mode_is_validated(self):
+        with self.assertRaises(ValueError):
+            self.state.submit_action(
+                "follow", "all", {"username": "x"}, text_mode="random"
+            )
+        with self.assertRaises(ValueError):
+            self.state.submit_action(
+                "post", "all", {"text": "x"}, text_mode="shuffle"
+            )
+        with self.assertRaises(ValueError):
+            # Same-text mode still needs the text
+            self.state.submit_action("post", "all", {})
+
     def test_action_requires_connected_devices(self):
         job = self.state.submit_action("follow", "all", {"username": "x"})
         done = wait_job(self.state, job["id"])
@@ -1388,6 +1444,24 @@ class DashboardHttpTests(unittest.TestCase):
         self.assertEqual(payload["summary"]["total"], 2)
         self.assertEqual(len(payload["devices"]), 2)
 
+    def test_generate_post_text_endpoint(self):
+        status, body = self.request_json("/api/generate/post-text")
+        self.assertEqual(status, 200)
+        self.assertTrue(body["text"])
+        self.assertEqual(body["texts"], [body["text"]])
+
+        status, body = self.request_json("/api/generate/post-text?count=5")
+        self.assertEqual(status, 200)
+        self.assertEqual(len(body["texts"]), 5)
+        self.assertEqual(len(set(body["texts"])), 5)
+
+        for bad in ("0", "51", "abc"):
+            status, body = self.request_json(
+                f"/api/generate/post-text?count={bad}"
+            )
+            self.assertEqual(status, 400, bad)
+            self.assertIn("count", body["error"])
+
     def test_screenshot_endpoint(self):
         status, body = self.request_json("/api/devices/d0/screenshot")
         self.assertEqual(status, 409)
@@ -1706,6 +1780,32 @@ class DashboardHttpTests(unittest.TestCase):
         self.assertEqual(
             done["result"]["devices"]["d0"]["result"]["comment_text"], "Halo"
         )
+
+    def test_action_endpoint_accepts_random_text_mode(self):
+        self.bot.connect_devices(self.rack)
+
+        status, job = self.request_json(
+            "/api/action",
+            "POST",
+            {"action": "post", "target": "all", "params": {}, "text_mode": "random"},
+        )
+
+        self.assertEqual(status, 202)
+        done = wait_job(self.state, job["id"])
+        self.assertEqual(done["status"], "succeeded")
+        texts = {
+            device["result"]["post_text"]
+            for device in done["result"]["devices"].values()
+        }
+        self.assertEqual(len(texts), 2)
+
+        status, body = self.request_json(
+            "/api/action",
+            "POST",
+            {"action": "post", "params": {}, "text_mode": "nope"},
+        )
+        self.assertEqual(status, 400)
+        self.assertIn("text_mode", body["error"])
 
     def test_bulk_endpoint_runs_and_reports_progress(self):
         self.bot.connect_devices(self.rack)

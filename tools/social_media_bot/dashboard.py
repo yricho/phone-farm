@@ -66,6 +66,8 @@ try:  # Support both package and direct-script execution.
     from .facebook import comment_on_post, create_post, follow_user
     from .generate_rack import parse_adb_devices, run_adb
     from .platforms import PlatformAdapter, PlatformInfo, default_platforms
+    from .post_generator import MAX_BATCH as MAX_GENERATED_TEXTS
+    from .post_generator import PostTextGenerator
     from .rack import Rack, DeviceSpec, load_rack
     from .social_media_bot import DeviceNotConnectedError, SocialMediaBot
 except ImportError:  # pragma: no cover - direct script execution
@@ -74,6 +76,8 @@ except ImportError:  # pragma: no cover - direct script execution
     from facebook import comment_on_post, create_post, follow_user
     from generate_rack import parse_adb_devices, run_adb
     from platforms import PlatformAdapter, PlatformInfo, default_platforms
+    from post_generator import MAX_BATCH as MAX_GENERATED_TEXTS
+    from post_generator import PostTextGenerator
     from rack import Rack, DeviceSpec, load_rack
     from social_media_bot import DeviceNotConnectedError, SocialMediaBot
 
@@ -781,6 +785,9 @@ KEYCODES: Dict[str, int] = {
     "delete": 67,
 }
 
+#: ``text_mode`` values accepted by ``submit_action``.
+TEXT_MODES = ("same", "random")
+
 #: Action name -> callable(driver, **params).
 ACTIONS: Dict[str, Callable[..., Any]] = {
     "follow": follow_user,
@@ -1332,6 +1339,8 @@ class DashboardState:
             mjpeg_token=mjpeg_token,
         )
 
+        self.post_text_generator = PostTextGenerator()
+
         self._lock = threading.RLock()
         self._logs: Deque[Dict[str, Any]] = deque(maxlen=max_logs)
         self._log_ids = itertools.count(1)
@@ -1823,6 +1832,7 @@ class DashboardState:
         *,
         platform: Optional[str] = None,
         schedule_at: Optional[float] = None,
+        text_mode: str = "same",
     ) -> Dict[str, Any]:
         """Queue a follow/post/comment job for one platform.
 
@@ -1831,6 +1841,10 @@ class DashboardState:
             target: ``"all"`` or one rack UDID.
             params: Action arguments (username/text/url).
             platform: Platform key; defaults to the registry's first platform.
+            text_mode: ``"same"`` posts ``params["text"]`` everywhere;
+                ``"random"`` (post only) generates a different everyday-life
+                text for every device when the job runs, so a rack does not
+                publish 20 identical posts.
         """
         platform_key = platform or self._default_platform
         adapter = self._platforms.get(platform_key)
@@ -1844,8 +1858,19 @@ class DashboardState:
             )
         if not isinstance(params, dict):
             raise ValueError("params must be a JSON object")
+        if text_mode not in TEXT_MODES:
+            raise ValueError(
+                f"text_mode must be one of {', '.join(TEXT_MODES)}"
+            )
+        random_text = text_mode == "random"
+        if random_text and action != "post":
+            raise ValueError("text_mode 'random' is only supported for post")
 
         required = adapter.info.required_fields(action)
+        if random_text:
+            # The text is generated per device at run time
+            params = {k: v for k, v in params.items() if k != "text"}
+            required = tuple(field for field in required if field != "text")
         missing = [
             field
             for field in required
@@ -1865,18 +1890,18 @@ class DashboardState:
                 raise ValueError(f"unknown target device {target!r}")
 
         clean = {field: params[field].strip() for field in required}
-        label = self._action_label(adapter, action, target, clean)
-        return self._submit(
-            "action",
-            {
-                "platform": platform_key,
-                "action": action,
-                "target": target,
-                "params": clean,
-            },
-            label,
-            schedule_at=schedule_at,
+        label = self._action_label(
+            adapter, action, target, clean, random_text=random_text
         )
+        payload: Dict[str, Any] = {
+            "platform": platform_key,
+            "action": action,
+            "target": target,
+            "params": clean,
+        }
+        if random_text:
+            payload["text_mode"] = "random"
+        return self._submit("action", payload, label, schedule_at=schedule_at)
 
     def submit_bulk(
         self,
@@ -2559,10 +2584,22 @@ class DashboardState:
                 f"{adapter.label} does not implement {action!r}"
             )
 
+        random_text = payload.get("text_mode") == "random"
+
         def run(driver: Any, udid: str) -> Any:
+            call_params = params
+            if random_text:
+                call_params = dict(
+                    params, text=self.post_text_generator.generate()
+                )
+                logging.getLogger(LOGGER_NAME).info(
+                    "Random post text for %s: %s",
+                    udid,
+                    call_params["text"].replace("\n", " "),
+                )
             try:
                 self._consume_limit(platform_key, action, udid)
-                value = handler(driver, **params)
+                value = handler(driver, **call_params)
             except Exception:
                 self._record_analytics(platform_key, action, udid, False)
                 raise
@@ -2603,11 +2640,15 @@ class DashboardState:
         action: str,
         target: str,
         params: Dict[str, str],
+        *,
+        random_text: bool = False,
     ) -> str:
         target_label = "all devices" if target == "all" else target
         prefix = f"{adapter.label} · "
         if action == "follow":
             return f"{prefix}Follow @{params['username']} · {target_label}"
+        if action == "post" and random_text:
+            return f"{prefix}Post (teks acak per HP) · {target_label}"
         if action == "post":
             preview = params["text"].replace("\n", " ")
             if len(preview) > 32:
@@ -2662,6 +2703,20 @@ class DashboardState:
             result.get("method", "unknown"),
         )
         return {"ok": True, "udid": udid, "muted": muted, **result}
+
+    def generate_post_texts(self, count: Any = 1) -> Dict[str, Any]:
+        """Return random everyday-life post texts for the Generate button."""
+
+        try:
+            amount = int(count)
+        except (TypeError, ValueError):
+            raise ValueError("count must be an integer") from None
+        if not 1 <= amount <= MAX_GENERATED_TEXTS:
+            raise ValueError(
+                f"count must be between 1 and {MAX_GENERATED_TEXTS}"
+            )
+        texts = self.post_text_generator.generate_many(amount)
+        return {"text": texts[0], "texts": texts}
 
     # ------------------------------------------------------------------
     # API snapshots
@@ -3196,6 +3251,16 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(
                     {"error": str(exc)}, HTTPStatus.BAD_REQUEST
                 )
+        elif path == "/api/generate/post-text":
+            query = parse_qs(parsed.query)
+            try:
+                self._send_json(
+                    self.server.state.generate_post_texts(
+                        query.get("count", ["1"])[0]
+                    )
+                )
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
         elif path == "/api/logs":
             query = parse_qs(parsed.query)
             try:
@@ -3303,6 +3368,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                     schedule_at=_schedule_timestamp(
                         payload.get("schedule_at")
                     ),
+                    text_mode=payload.get("text_mode", "same"),
                 )
             elif parsed.path == "/api/bulk":
                 job = self.server.state.submit_bulk(

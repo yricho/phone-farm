@@ -1255,6 +1255,32 @@ html[data-theme="light"] .theme-icon-moon { display: block; }
   color: var(--accent);
 }
 .field { display: grid; gap: 5px; }
+.field-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.field-actions .hint { margin: 0; }
+.field-actions .btn { flex: none; }
+.field > .check-row,
+.check-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.check-row input { margin: 2px 0 0; accent-color: var(--accent, #d9772e); }
+.check-row small {
+  display: block;
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 400;
+}
+textarea:disabled { opacity: 0.6; cursor: not-allowed; }
 .field > label { color: var(--muted); font-size: 10.5px; font-weight: 600; }
 .bulk-options {
   display: grid;

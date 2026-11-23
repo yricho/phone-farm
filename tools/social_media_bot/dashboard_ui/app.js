@@ -116,6 +116,11 @@
     urlWrap: $("field-url-wrap"),
     url: $("field-url"),
     textWrap: $("field-text-wrap"),
+    textActions: $("field-text-actions"),
+    textRandom: $("field-text-random"),
+    textRandomWrap: $("field-text-random-wrap"),
+    generatePostText: $("generate-post-text"),
+    generateCampaignText: $("generate-campaign-text"),
     textLabel: $("field-text-label"),
     text: $("field-text"),
     submit: $("action-submit"),
@@ -1007,6 +1012,9 @@
     els.usernameWrap.hidden = !singleField("username");
     els.urlWrap.hidden = !singleField("url");
     els.textWrap.hidden = !singleField("text");
+    // Generate fills a post text; comments/replies need context of the post
+    els.textActions.hidden = action !== "post";
+    els.textRandomWrap.hidden = action !== "post";
     els.bulkFields.hidden = !bulk;
     els.bulkHint.textContent = bulkHintFor(action);
 
@@ -1022,6 +1030,21 @@
         : action === "reply"
           ? "Tulis balasan…"
           : "Tulis teks postingan…";
+    syncRandomText();
+  }
+
+  function randomTextActive() {
+    return els.actionSelect.value === "post" && els.textRandom.checked;
+  }
+
+  function syncRandomText() {
+    const random = randomTextActive();
+    els.text.disabled = random;
+    els.generatePostText.disabled = random;
+    if (random) {
+      els.text.placeholder =
+        "Teks dibuat otomatis dan berbeda untuk tiap HP saat dijalankan.";
+    }
   }
 
   function currentDevice(udid) {
@@ -1498,6 +1521,36 @@
   els.modeSingle.addEventListener("click", () => setMode("single"));
   els.modeBulk.addEventListener("click", () => setMode("bulk"));
 
+  async function generatePostText(target, button) {
+    if (button.disabled) return;
+    if (
+      target.value.trim() &&
+      !window.confirm("Ganti teks yang sudah ada dengan teks acak?")
+    ) {
+      return;
+    }
+    button.disabled = true;
+    try {
+      const data = await api("/api/generate/post-text");
+      target.value = data.text || "";
+      target.dispatchEvent(new Event("input", { bubbles: true }));
+      target.focus();
+    } catch (error) {
+      toast(`Generate gagal: ${error.message}`, "bad");
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  els.textRandom.addEventListener("change", renderActionFields);
+
+  els.generatePostText.addEventListener("click", () =>
+    generatePostText(els.text, els.generatePostText),
+  );
+  els.generateCampaignText.addEventListener("click", () =>
+    generatePostText(els.campaignText, els.generateCampaignText),
+  );
+
   els.bulkFile.addEventListener("change", async () => {
     const file = els.bulkFile.files && els.bulkFile.files[0];
     if (!file) return;
@@ -1547,7 +1600,8 @@
     } else {
       const params = {};
       if (action === "follow") params.username = els.username.value.trim();
-      if (action === "post") params.text = els.text.value;
+      const randomText = randomTextActive();
+      if (action === "post" && !randomText) params.text = els.text.value;
       if (action === "comment" || action === "reply") {
         params.url = els.url.value.trim();
         params.text = els.text.value;
@@ -1561,6 +1615,7 @@
         target: els.targetSelect.value,
         params,
       };
+      if (randomText) payload.text_mode = "random";
     }
 
     const scheduledAt = scheduleValue(els.actionSchedule);
