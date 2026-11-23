@@ -100,7 +100,9 @@ kualitas `--stream-quality` (default `70`):
 
 - **Pillow opsional.** Tanpa Pillow frame dikirim apa adanya sebagai PNG
   (perilaku lama) dan dashboard mencetak catatan saat start. Pasang dengan
-  `pip install -r requirements.txt`.
+  `python -m pip install -r requirements.txt` (di Windows:
+  `.\.venv\Scripts\python.exe -m pip install -r requirements.txt`; jangan
+  `pip.exe` langsung, karena bisa diblokir Application Control).
 - Frame JPEG dari upstream MJPEG diteruskan tanpa encode ulang.
 - PNG yang tidak bisa dibaca tetap ditampilkan (pass-through), bukan dibuang.
 - Tombol **Snapshot** mengambil PNG resolusi penuh lewat
@@ -428,7 +430,7 @@ Catatan:
 | Gejala | Kemungkinan sebab | Tindakan |
 | --- | --- | --- |
 | Baris **Stream** menulis `Appium (lambat)` | Device tidak terlihat `adb devices` (remote/GADS) | Cek `adb -s <udid> get-state`; untuk device GADS isi `--mjpeg-url` |
-| Frame besar / browser berat, `content_type` = `image/png` | Pillow belum terpasang | `pip install -r requirements.txt` lalu restart dashboard |
+| Frame besar / browser berat, `content_type` = `image/png` | Pillow belum terpasang | `.\.venv\Scripts\python.exe -m pip install -r requirements.txt` lalu restart dashboard |
 | Live screen jadi hitam/error setelah beberapa saat | 5 kegagalan frame → stream ditutup | Buka ulang live screen; cek koneksi USB/Appium |
 | `--fast-mode` tapi `tuning.fast_mode` tetap `false` | Dashboard dijalankan tanpa flag / bot dibuat manual | Jalankan `dashboard.py --fast-mode`, atau `SocialMediaBot(fast_mode=True)` |
 | Aksi tetap lambat walau `fast_mode` aktif | Bottleneck bukan idle wait (jaringan, render app, atau jeda 3–7 s) | Turunkan `--action-delay-*` bertahap; ukur durasi per langkah |

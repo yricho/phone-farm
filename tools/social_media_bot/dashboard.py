@@ -57,7 +57,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 
 try:  # Optional: re-encode live screen frames as small JPEGs.
     from PIL import Image as _PILImage
-except ImportError:  # pragma: no cover - depends on the environment
+except Exception:  # pragma: no cover - missing, or DLL blocked by policy
     _PILImage = None
 
 try:  # Support both package and direct-script execution.
@@ -3887,7 +3887,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if _PILImage is None:
         print(
             "Catatan: Pillow belum terpasang; live screen dikirim sebagai PNG "
-            "penuh (lebih lambat). Jalankan: pip install -r requirements.txt"
+            "penuh (lebih lambat). Jalankan: python -m pip install -r requirements.txt"
         )
     logging.basicConfig(
         level=logging.INFO,

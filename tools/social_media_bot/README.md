@@ -975,7 +975,8 @@ tuas berikut (semuanya opsional, default tetap aman).
 ### 1. Live screen: `adb` alih-alih Appium (default `auto`)
 
 ```bash
-pip install -r requirements.txt   # Pillow: frame JPEG kecil, bukan PNG penuh
+python3 -m pip install -r requirements.txt   # Pillow: frame JPEG kecil, bukan PNG penuh
+# Windows: .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 python3 dashboard.py --manifest rack-01.json
 ```
 
@@ -1198,6 +1199,12 @@ manifest dari output adb, serta round-trip capability lewat
 - **`Activate.ps1 cannot be loaded`** — jalankan
   `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass`, atau gunakan
   `.venv\Scripts\activate.bat` dari Command Prompt.
+- **`program 'pip.exe' failed to run: An application control policy has
+  blocked this file`** — Windows Application Control/AppLocker memblokir
+  `pip.exe`. Panggil pip lewat Python venv:
+  `.\.venv\Scripts\python.exe -m pip install -r requirements.txt`. Bila Pillow
+  tetap tidak bisa dipasang/dimuat, dashboard tetap jalan dengan frame PNG
+  (lebih lambat).
 - **`adb` tidak dikenali** — tambahkan folder Android `platform-tools` ke
   `PATH`, lalu buka terminal baru.
 - **`Neither ANDROID_HOME nor ANDROID_SDK_ROOT … was exported`** — `adb` di
