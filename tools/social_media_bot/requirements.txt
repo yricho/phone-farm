@@ -1,1 +1,3 @@
 Appium-Python-Client>=3.0.0
+# Optional but recommended: shrinks live screen frames to small JPEGs
+Pillow>=10.0

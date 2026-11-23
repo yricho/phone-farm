@@ -97,9 +97,9 @@ Kalau aksi atau live screen terasa lambat, jalankan dengan tuning performa
 ```powershell
 .\start-dashboard.bat --fast-mode --action-delay-min 1 --action-delay-max 2.5
 
-# atau langsung tanpa .bat (mis. perlu --stream-interval 0.3)
+# atau langsung tanpa .bat (interval live screen otomatis 0.3 dtk untuk adb)
 .\.venv\Scripts\python.exe .\dashboard.py --manifest rack-01.json `
-  --screen-source auto --stream-interval 0.3 --fast-mode `
+  --screen-source auto --fast-mode `
   --action-delay-min 1 --action-delay-max 2.5
 ```
 

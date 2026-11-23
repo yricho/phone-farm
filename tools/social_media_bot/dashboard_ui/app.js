@@ -136,6 +136,7 @@
     panelDevice: $("screen-panel-device"),
     panelSession: $("screen-panel-session"),
     panelPort: $("screen-panel-port"),
+    panelStream: $("screen-panel-stream"),
     screenSize: $("screen-size"),
     screenResolution: $("screen-resolution"),
     liveDeviceList: $("live-device-list"),
@@ -1220,6 +1221,7 @@
       els.panelSession.textContent = "—";
       els.panelSession.removeAttribute("title");
       els.panelPort.textContent = "—";
+      renderStreamInfo(null);
       if (els.footerDevice) els.footerDevice.textContent = "—";
       return;
     }
@@ -1231,7 +1233,31 @@
       : "—";
     els.panelSession.title = session;
     els.panelPort.textContent = device.appium_port;
+    renderStreamInfo(device.stream);
     if (els.footerDevice) els.footerDevice.textContent = device.udid;
+  }
+
+  const STREAM_SOURCE_LABELS = {
+    adb: "adb",
+    mjpeg: "MJPEG",
+    appium: "Appium (lambat)",
+  };
+
+  function renderStreamInfo(stream) {
+    if (!els.panelStream) return;
+    if (!stream || !stream.source) {
+      els.panelStream.textContent = "—";
+      els.panelStream.removeAttribute("title");
+      return;
+    }
+    const label = STREAM_SOURCE_LABELS[stream.source] || stream.source;
+    const kb = stream.frame_bytes ? ` · ${Math.round(stream.frame_bytes / 1024)} KB` : "";
+    els.panelStream.textContent = `${label} · ${stream.fps} fps`;
+    els.panelStream.title =
+      `Sumber frame: ${label}${kb} · interval ${stream.interval}s` +
+      (stream.source === "appium"
+        ? " — device tidak terdeteksi adb lokal; frame lewat UiAutomator2"
+        : "");
   }
 
   function openScreen(udid) {
@@ -1292,9 +1318,11 @@
     }
     els.liveEmpty.textContent = "Menghubungkan live screen…";
     setLiveStatus("Connecting", "warn");
+    // No ?interval: the server picks it (--stream-interval, or 0.3 s for
+    // adb/MJPEG frames and 1 s for Appium screenshots).
     els.liveImg.src =
       `/api/devices/${encodeURIComponent(device.udid)}/stream` +
-      `?interval=1&t=${Date.now()}`;
+      `?t=${Date.now()}`;
   }
 
   function stopLiveStream() {
@@ -1320,22 +1348,25 @@
     els.screenInputStatus.textContent = "Klik = tap · drag = swipe";
   }
 
-  function saveScreenSnapshot() {
-    const img = els.liveImg;
-    if (!state.liveUdid || img.hidden || !img.naturalWidth) {
+  async function saveScreenSnapshot() {
+    const udid = state.liveUdid;
+    if (!udid || els.liveImg.hidden) {
       toast("Live screen belum aktif.", "bad");
       return;
     }
+    // The live stream is a downscaled JPEG; fetch a full-resolution PNG
+    // (adb for local devices, Appium otherwise).
     try {
-      const canvas = document.createElement("canvas");
-      canvas.width = img.naturalWidth;
-      canvas.height = img.naturalHeight;
-      const context = canvas.getContext("2d");
-      context.drawImage(img, 0, 0);
+      const response = await fetch(
+        `/api/devices/${encodeURIComponent(udid)}/screenshot`,
+      );
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const url = URL.createObjectURL(await response.blob());
       const link = document.createElement("a");
-      link.download = `${state.liveUdid}-${Date.now()}.png`;
-      link.href = canvas.toDataURL("image/png");
+      link.download = `${udid}-${Date.now()}.png`;
+      link.href = url;
       link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
       toast("Snapshot layar disimpan.", "ok");
     } catch (error) {
       toast(`Snapshot gagal: ${error.message}`, "bad");

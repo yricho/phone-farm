@@ -996,7 +996,7 @@ class AdbFrameGrabberTests(unittest.TestCase):
         with mock.patch.object(
             dashboard.subprocess, "run", side_effect=results
         ) as run:
-            grabber = dashboard.AdbFrameGrabber("emulator-5554")
+            grabber = dashboard.AdbFrameGrabber("emulator-5554", raw=False)
             self.assertEqual(grabber.capture(), self.FRAME)
 
         self.assertEqual(run.call_count, 2)
@@ -1026,7 +1026,7 @@ class AdbFrameGrabberTests(unittest.TestCase):
             "run",
             side_effect=[probe] + [garbage] * dashboard.ADB_MAX_FAILURES,
         ):
-            grabber = dashboard.AdbFrameGrabber("d0")
+            grabber = dashboard.AdbFrameGrabber("d0", raw=False)
             for _ in range(dashboard.ADB_MAX_FAILURES):
                 self.assertIsNone(grabber.capture())
             self.assertFalse(grabber.available)

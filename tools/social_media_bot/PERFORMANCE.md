@@ -18,8 +18,10 @@ dokumen ini fokus pada *bagaimana* semuanya bekerja, nilai default, dan batasann
 
 | Tuas | Aktif lewat | Default | Efek utama |
 | --- | --- | --- | --- |
-| Sumber frame live screen | `--screen-source auto\|appium` | `auto` | Frame lokal diambil dengan `adb exec-out screencap -p`, tidak lewat UiAutomator2 |
-| Interval live screen | `--stream-interval` (atau `?interval=` di URL) | `1.0` dtk, clamp `0.3–10` | Semakin kecil semakin halus |
+| Sumber frame live screen | `--screen-source auto\|appium` | `auto` | Frame lokal lewat `adb exec-out screencap` (raw/PNG dipilih otomatis), remote lewat `--mjpeg-url` bila diisi, sisanya Appium |
+| Interval live screen | `--stream-interval` (atau `?interval=` di URL) | otomatis: `0.3` dtk (adb/MJPEG), `1.0` dtk (Appium); clamp `0.3–10` | Semakin kecil semakin halus |
+| Ukuran/kualitas frame | `--stream-max-width`, `--stream-quality` | `720` px, JPEG `70` (butuh Pillow) | Frame ~80 KB, bukan PNG 0,5–3 MB |
+| Stream upstream untuk device remote | `--mjpeg-url`, `--mjpeg-token` | mati | Device GADS memakai MJPEG provider, bukan screenshot Appium |
 | Jeda antar langkah aksi | `--action-delay-min/--action-delay-max` atau `SocialMediaBot(action_delay_range=...)` | platform: `(3.0, 7.0)` | Waktu diam di dalam alur follow/post/comment |
 | Mode cepat UiAutomator2 | `--fast-mode` / `fast_mode=True` | mati | `waitForIdleTimeout=0`, `waitForSelectorTimeout=1000`, animasi window dimatikan |
 
@@ -28,8 +30,9 @@ Nilai yang sedang aktif selalu bisa dilihat di `GET /api/status` pada blok
 
 ## 2. Prinsip desain
 
-- **Default aman.** Tanpa flag, tidak ada perilaku yang berubah: frame lewat
-  Appium, jeda tetap 3–7 detik, idle wait UiAutomator2 tetap standar.
+- **Default aman.** Tanpa flag, perilaku otomasi tidak berubah: jeda tetap
+  3–7 detik, idle wait UiAutomator2 tetap standar. Live screen memakai jalur
+  tercepat yang tersedia dan tetap jatuh ke Appium bila perlu.
 - **Fallback selalu tersedia.** Jalur cepat (adb) tidak pernah menjadi syarat;
   kalau tidak memungkinkan, sistem kembali ke Appium tanpa error ke pengguna.
 - **Satu sumber kebenaran untuk tuning.** Nilai tuning dioper dari CLI →
@@ -44,78 +47,141 @@ Nilai yang sedang aktif selalu bisa dilihat di `GET /api/status` pada blok
 
 ```text
 Browser (MJPEG <img>)
-   │  GET /api/devices/<udid>/stream?interval=0.3
+   │  GET /api/devices/<udid>/stream          (tanpa ?interval → server memilih)
    ▼
 DashboardRequestHandler._serve_stream()
    │  ScreenStreamManager.acquire(udid, interval)
    │    ├─ pastikan device punya sesi Appium (get_driver → raise kalau offline)
-   │    ├─ clamp interval → 0.3..10
    │    └─ buat/pakai ulang DeviceStream (satu per UDID, dibagi semua viewer)
    ▼
 DeviceStream._capture_loop()  (thread daemon, satu per UDID)
-   │  1. frame_source()  ← AdbFrameGrabber.capture() bila screen_source=auto
-   │  2. frame is None?  → driver.get_screenshot_as_png()  (Appium)
+   │  1. sumber frame berurutan, yang pertama berhasil dipakai:
+   │       a. "adb"   → AdbFrameGrabber.capture()   (device menempel di host)
+   │       b. "mjpeg" → MjpegFrameSource.capture()  (bila --mjpeg-url diisi)
+   │       c. "appium"→ driver.get_screenshot_as_png()
+   │  2. FrameEncoder: kecilkan ke --stream-max-width, encode JPEG (Pillow)
    │  3. simpan frame + notify subscriber
-   └─ sleep(max(0.05, interval - elapsed))
+   └─ sleep(interval - elapsed)   (MJPEG: polling 50 ms, duplikat dilewati)
    ▼
-multipart/x-mixed-replace, tiap part: Content-Type: image/png
+multipart/x-mixed-replace, tiap part: Content-Type: image/jpeg (atau image/png)
 ```
 
 Poin penting:
 
 - **Satu loop per device, bukan per viewer.** Dua tab browser yang menonton HP
-  yang sama berbagi frame yang sama.
+  yang sama berbagi frame yang sama, dan frame di-encode sekali saja.
+- **Interval.** UI tidak lagi mengirim `?interval` (dulu selalu `1`, sehingga
+  `--stream-interval` tidak pernah berlaku). Urutan prioritas: viewer tercepat
+  yang mengirim `?interval=` → `--stream-interval` → otomatis (`0.3` dtk untuk
+  frame adb/MJPEG, `1.0` dtk untuk screenshot Appium agar tidak berebut dengan
+  aksi). Semua nilai di-clamp `0.3–10`.
 - **Stream tetap butuh sesi Appium.** Validasi `get_driver(udid)` di `acquire()`
-  membuat device yang belum di-*Connect* tidak bisa dibuka live screen-nya,
-  meskipun frame-nya nanti diambil lewat adb.
+  membuat device yang belum di-*Connect* tidak bisa dibuka live screen-nya.
 - **Stream hidup selama ada subscriber.** `remove_subscriber()` menutup stream
   saat subscriber terakhir pergi; `close_all()` dipakai saat Disconnect.
-- **Gagal 5× berturut-turut → stream ditutup.** Perilaku lama dipertahankan;
-  buka ulang live screen (atau `Connect all`) untuk memulai loop baru.
+- **Gagal 5× berturut-turut → stream ditutup.** Sumber yang melempar exception
+  dilewati (lanjut ke sumber berikutnya); yang dihitung adalah kegagalan Appium
+  sebagai pilihan terakhir.
 - **Ganti host Appium ditolak saat ada stream aktif**
   (`ScreenStreamManager.set_bot` → `RuntimeError`).
 
-### 3.2 `AdbFrameGrabber`
+### 3.2 `FrameEncoder` — kenapa JPEG kecil
 
-Dibuat sekali per stream (bukan per frame), lalu dipakai sebagai `frame_source`.
+Panel live hanya selebar ±280–400 px CSS, sedangkan screenshot HP 1080×2400.
+Mengirim PNG penuh (0,5–3 MB) setiap frame membuang bandwidth dan membuat
+browser men-decode PNG besar berkali-kali per detik. `FrameEncoder`
+mengecilkan frame ke `--stream-max-width` (default `720`) lalu meng-encode JPEG
+kualitas `--stream-quality` (default `70`):
+
+| Input (1080×2400) | Output | Biaya di host |
+| --- | --- | --- |
+| PNG dari `screencap -p` (~0,5 MB) | JPEG ~80 KB | ~35 ms |
+| Raw dari `screencap` (~10 MB) | JPEG ~80 KB | ~25 ms |
+
+- **Pillow opsional.** Tanpa Pillow frame dikirim apa adanya sebagai PNG
+  (perilaku lama) dan dashboard mencetak catatan saat start. Pasang dengan
+  `pip install -r requirements.txt`.
+- Frame JPEG dari upstream MJPEG diteruskan tanpa encode ulang.
+- PNG yang tidak bisa dibaca tetap ditampilkan (pass-through), bukan dibuang.
+- Tombol **Snapshot** mengambil PNG resolusi penuh lewat
+  `GET /api/devices/<udid>/screenshot`, bukan dari frame JPEG yang diperkecil.
+
+### 3.3 `AdbFrameGrabber`
+
+Dibuat sekali per device (dipakai ulang oleh stream dan snapshot).
 
 | Tahap | Perintah | Perilaku |
 | --- | --- | --- |
-| Probe (sekali, lazy) | `adb -s <udid> get-state` | Hasil di-cache di instance. `device` + exit 0 → jalur adb dipakai; selain itu → `None` (fallback Appium) |
-| Ambil frame | `adb -s <udid> exec-out screencap -p` | Timeout 5 dtk; hanya diterima bila keluaran dimulai magic PNG `\x89PNG\r\n\x1a\n` |
-| Kegagalan | — | Dihitung; setelah **3** kegagalan beruntun jalur adb dimatikan untuk stream itu (`available=False`) |
+| Probe (lazy) | `adb -s <udid> get-state` | `device` + exit 0 → jalur adb dipakai; selain itu → sumber berikutnya. Probe gagal diulang tiap **30 dtk** |
+| Benchmark (sekali) | `screencap` lalu `screencap -p` | Bila Pillow ada: satu frame raw dan satu frame PNG diukur, format yang lebih cepat dipakai seterusnya |
+| Ambil frame | `adb -s <udid> exec-out screencap [-p]` | Timeout 5 dtk; PNG harus diawali magic PNG, raw harus punya header 12/16 byte yang cocok dengan ukuran data |
+| Kegagalan | — | Setelah **3** kegagalan beruntun jalur adb dijeda **30 dtk** (`ADB_RETRY_SECONDS`), lalu dicoba lagi |
+
+Kenapa dua format: `screencap -p` membuat **HP** mengompres PNG layar penuh
+(ratusan ms CPU HP), sedangkan `screencap` tanpa `-p` mengirim piksel mentah
+(~4 byte/piksel, tanpa encode). Di emulator dan USB 3 raw biasanya menang; di
+USB 2 yang padat PNG bisa lebih cepat. Benchmark memilih otomatis per device;
+log `Live screen <udid> uses adb raw|png frames (...)` menunjukkan hasilnya.
+Format raw yang tidak dikenal (pixel format selain RGBA/RGBX/BGRA) otomatis
+membuat device itu memakai PNG.
 
 Konsekuensi yang perlu diketahui:
 
 - Probe berjalan di **thread stream**, bukan di request HTTP, sehingga membuka
   live screen tidak pernah menggantung menunggu adb.
-- Device remote (mis. device GADS `emu_<provider>_<AVD>` atau `device/<id>`)
-  otomatis gagal di probe → semua frame lewat Appium, tanpa konfigurasi.
+- Device remote (mis. device GADS `emu_<provider>_<AVD>`) gagal di probe →
+  sumber berikutnya (MJPEG bila dikonfigurasi, lalu Appium).
 - Bila `adb` tidak ada di `PATH`, `FileNotFoundError` ditangkap → dianggap
-  "tidak tersedia", bukan error fatal. Pakai `--adb /path/ke/adb` bila perlu.
+  "tidak tersedia". Pakai `--adb /path/ke/adb` bila perlu.
+- Satu frame tetap satu proses `adb`. Proses `adb` yang dipertahankan antar
+  frame sengaja tidak dipakai: memisahkan frame dari aliran byte tidak bisa
+  diandalkan lintas versi Android, sementara biaya spawn (~30–80 ms di Windows)
+  kecil dibanding biaya capture itu sendiri.
 
-### 3.3 Kenapa adb lebih cepat
+### 3.4 `MjpegFrameSource` — device remote / GADS
+
+Device yang tidak menempel di host dashboard sebelumnya selalu lewat screenshot
+Appium (UiAutomator2), yang antre dengan `click`/`find_element`. Bila provider
+GADS menjalankan device tersebut, frame bisa diambil dari stream MJPEG GADS
+(dihasilkan aplikasi capture di HP, sama sekali tidak menyentuh UiAutomator2):
+
+```bash
+# langsung ke provider GADS (rute provider tidak memakai auth hub)
+python dashboard.py --mjpeg-url "http://<provider>:<port>/device/{udid}/android-stream-mjpeg"
+
+# lewat hub GADS yang memakai auth
+set GADS_MJPEG_TOKEN=<bearer token hub>
+python dashboard.py --mjpeg-url "http://<hub>:10000/device/{udid}/android-stream-mjpeg"
+```
+
+- `{udid}` wajib ada dan diganti UDID (di-URL-encode). Bisa juga lewat env
+  `GADS_MJPEG_URL`.
+- `--mjpeg-token` / `GADS_MJPEG_TOKEN` dikirim sebagai
+  `Authorization: Bearer ...` dari server dashboard; token tidak pernah sampai
+  ke browser.
+- Urutan sumber tetap adb → MJPEG → Appium, jadi HP lokal tetap memakai adb.
+- Reader berjalan di thread sendiri, reconnect dengan back-off 1→10 dtk, dan
+  memotong frame dengan marker JPEG (`FFD8`…`FFD9`), sehingga upstream tanpa
+  `Content-Length` (seperti GADS) tetap terbaca.
+- Frame yang lebih tua dari 5 dtk dianggap basi → jatuh ke Appium sampai
+  upstream pulih.
+- `--screen-source appium` mematikan adb **dan** MJPEG.
+
+### 3.5 Kenapa adb/MJPEG lebih cepat daripada Appium
 
 Screenshot Appium (`get_screenshot_as_png`) dieksekusi oleh **server
 UiAutomator2 di device**, memakai jalur yang sama dengan `find_element`,
-`click`, dan `send_keys`. Artinya:
+`click`, dan `send_keys`. Artinya frame berikutnya menunggu command sebelumnya
+selesai, dan polling live screen **bersaing** dengan aksi otomasi. `adb exec-out
+screencap` dan stream MJPEG berjalan di jalur terpisah.
 
-- frame berikutnya harus menunggu command sebelumnya selesai (serialisasi), dan
-- polling live screen **bersaing** dengan aksi otomasi di device yang sama.
+### 3.6 Batas yang tetap berlaku
 
-`adb exec-out screencap` berjalan di jalur terpisah (adb server ↔
-`screencap`), sehingga live screen tidak lagi memperlambat posting/comment.
-Inilah sebabnya menurunkan interval saja (tanpa mengganti sumber) tidak pernah
-sehalus GADS — plafonnya ada di serialisasi perintah Appium.
-
-### 3.4 Batas yang tetap berlaku
-
-- Endpoint `GET /api/devices/<udid>/screenshot` (tangkapan tunggal) **tetap**
-  memakai Appium; yang dialihkan hanya aliran MJPEG.
-- `--stream-interval` di bawah `0.3` tetap di-clamp ke `0.3` (kontrak lama
-  `ScreenStreamManager`), baik untuk adb maupun Appium.
-- Emulator/HP fisik yang tidak menempel di host dashboard tetap lewat Appium —
-  termasuk semua device GADS bila hub berjalan di mesin lain.
+- `--stream-interval`/`?interval=` di bawah `0.3` tetap di-clamp ke `0.3`
+  untuk adb dan Appium (MJPEG dipoll 50 ms, mengikuti kecepatan upstream).
+- Mode ukuran **Actual** di panel menampilkan frame hasil downscale
+  (default lebar 720). Pakai `--stream-max-width 0` untuk resolusi penuh.
+- Satu panel live = satu stream; device lain tidak di-capture.
 
 ## 4. Cara kerja tuning jeda aksi (`delay_range`)
 
@@ -237,9 +303,25 @@ reconnect_device() → _create_driver()
 "tuning": {
   "fast_mode": true,
   "action_delay_range": [1.0, 2.5],
-  "screen_source": "auto"
+  "screen_source": "auto",
+  "stream_interval": null,
+  "stream_max_width": 720,
+  "stream_quality": 70,
+  "stream_jpeg": true,
+  "stream_mjpeg": false
 }
 ```
+
+Setiap device di `devices[]` juga punya blok `stream` selama live screen
+terbuka (`null` bila tidak):
+
+```json
+"stream": {"source": "adb", "fps": 3.2, "interval": 0.3, "viewers": 1,
+           "content_type": "image/jpeg", "frame_bytes": 81234}
+```
+
+Panel live menampilkannya di baris **Stream** (mis. `adb · 3.2 fps`). Bila
+tertulis `Appium (lambat)`, device tidak terlihat oleh adb di host dashboard.
 
 - `action_delay_range` bernilai `null` bila tidak ada tuning (default platform).
 - `fast_mode` dibaca dari bot (`getattr(bot, "fast_mode", False)`), jadi
@@ -254,14 +336,19 @@ reconnect_device() → _create_driver()
 | — | Stream tertutup diam-diam | 5 kegagalan frame beruntun; buka ulang live screen |
 
 `AdbFrameGrabber` sengaja tidak menulis log per frame (bisa 3–8 baris/detik);
-kegagalannya terlihat dari frame yang tetap datang lewat Appium.
+kegagalannya terlihat dari `stream.source` di status. Satu-satunya log `info`
+adalah hasil benchmark format (`Live screen <udid> uses adb raw|png frames`).
+Kegagalan upstream MJPEG dicatat di level `debug`.
 
 ### 6.3 Mengukur sendiri
 
 ```bash
 # perkiraan fps: hitung part MJPEG dalam 5 detik
 curl -sN "http://127.0.0.1:8080/api/devices/<udid>/stream?interval=0.3" \
-  | timeout 5 grep -c "Content-Type: image/png" || true
+  | timeout 5 grep -ac "Content-Type: image/" || true
+
+# atau lihat fps/sumber yang dihitung server
+curl -s http://127.0.0.1:8080/api/status | python -m json.tool | grep -A6 '"stream"'
 
 # biaya satu frame adb (target < 0,3 dtk untuk HP USB modern)
 time adb -s <udid> exec-out screencap -p > /dev/null
@@ -282,7 +369,11 @@ curl -s http://127.0.0.1:8080/api/status | python3 -c \
 | `--action-delay-max` | float, `None` | Batas atas jeda |
 | `--screen-source` | `auto`\|`appium`, `auto` | `auto`: adb untuk device lokal + fallback Appium; `appium`: selalu Appium |
 | `--adb` | path, `adb` | Lokasi binary adb untuk live screen |
-| `--stream-interval` | float, `1.0` | Interval default live screen (clamp `0.3–10`) |
+| `--stream-interval` | float, otomatis | Interval default live screen (clamp `0.3–10`); kosong = `0.3` adb/MJPEG, `1.0` Appium |
+| `--stream-max-width` | int, `720` | Lebar frame live screen; `0` = resolusi device (butuh Pillow) |
+| `--stream-quality` | int, `70` | Kualitas JPEG `10–95` (butuh Pillow) |
+| `--mjpeg-url` | URL dengan `{udid}`, `$GADS_MJPEG_URL` | Stream MJPEG upstream untuk device remote |
+| `--mjpeg-token` | string, `$GADS_MJPEG_TOKEN` | Bearer token untuk `--mjpeg-url` |
 
 Validasi: batas jeda harus memenuhi `0 <= min <= max`; hanya salah satu batas
 diisi → dashboard menolak start dengan exit code `2`.
@@ -336,7 +427,8 @@ Catatan:
 
 | Gejala | Kemungkinan sebab | Tindakan |
 | --- | --- | --- |
-| Live screen tetap ~1 fps walau `--screen-source auto` | Device tidak terlihat `adb devices` (remote/GADS) | Cek `adb -s <udid> get-state`; untuk device remote memang lewat Appium |
+| Baris **Stream** menulis `Appium (lambat)` | Device tidak terlihat `adb devices` (remote/GADS) | Cek `adb -s <udid> get-state`; untuk device GADS isi `--mjpeg-url` |
+| Frame besar / browser berat, `content_type` = `image/png` | Pillow belum terpasang | `pip install -r requirements.txt` lalu restart dashboard |
 | Live screen jadi hitam/error setelah beberapa saat | 5 kegagalan frame → stream ditutup | Buka ulang live screen; cek koneksi USB/Appium |
 | `--fast-mode` tapi `tuning.fast_mode` tetap `false` | Dashboard dijalankan tanpa flag / bot dibuat manual | Jalankan `dashboard.py --fast-mode`, atau `SocialMediaBot(fast_mode=True)` |
 | Aksi tetap lambat walau `fast_mode` aktif | Bottleneck bukan idle wait (jaringan, render app, atau jeda 3–7 s) | Turunkan `--action-delay-*` bertahap; ukur durasi per langkah |
@@ -354,6 +446,7 @@ Test yang mengunci mekanisme baru:
 | --- | --- |
 | Capability + setting fast mode, aplikasi saat reconnect, toleransi kegagalan, validasi `action_delay_range` | `FastModeTests` (`tests/test_social_media_bot.py`) |
 | Probe/capture adb, caching probe, output non-PNG, adb tidak ada | `AdbFrameGrabberTests` (`tests/test_dashboard.py`) |
+| Raw vs PNG, benchmark, retry adb, encoder JPEG, MJPEG upstream, interval per viewer, snapshot, status `stream` | `tests/test_live_screen.py` |
 | Pemilihan sumber frame, fallback Appium, `screen_source=appium`, validasi nilai | `ScreenSourceTests` |
 | Injeksi `delay_range` pada action/bulk, default tetap, validasi | `ActionTuningTests` |
 | Flag CLI baru & validasinya | `PerfFlagTests` |
@@ -369,9 +462,9 @@ Live view GADS (MJPEG/WebRTC di sisi device) tetap yang paling halus untuk
 1. **GADS** untuk memantau/mengontrol device secara manual saat butuh presisi.
 2. **SocialMediaBot** untuk aksi terjadwal (follow/post/comment/bulk/campaign),
    dengan `--fast-mode` dan jeda yang sudah dituning.
-3. Kalau semua ingin di dashboard: `--screen-source auto --stream-interval 0.3
-   --fast-mode --action-delay-min 1 --action-delay-max 2.5` memberi perbaikan
-   paling terasa tanpa menyentuh GADS.
+3. Kalau semua ingin di dashboard: pasang Pillow, jalankan dengan `--fast-mode
+   --action-delay-min 1 --action-delay-max 2.5`, dan untuk device GADS remote
+   isi `--mjpeg-url` (§3.4) agar live screen memakai stream MJPEG GADS.
 
 ## 12. Referensi kode
 
@@ -379,7 +472,9 @@ Live view GADS (MJPEG/WebRTC di sisi device) tetap yang paling halus untuk
 | --- | --- |
 | Konstanta default jeda | `platforms/base.py` (`DEFAULT_DELAY_RANGE`, `FAST_DELAY_RANGE`) |
 | Loop frame + interval | `dashboard.py` (`DeviceStream`) |
-| Sumber frame adb | `dashboard.py` (`AdbFrameGrabber`, `PNG_SIGNATURE`, `ADB_MAX_FAILURES`) |
+| Sumber frame adb | `dashboard.py` (`AdbFrameGrabber`, `RawFrame`, `ADB_MAX_FAILURES`, `ADB_RETRY_SECONDS`) |
+| Encode JPEG | `dashboard.py` (`FrameEncoder`, `DEFAULT_STREAM_MAX_WIDTH`, `DEFAULT_STREAM_QUALITY`) |
+| Stream upstream | `dashboard.py` (`MjpegFrameSource`) |
 | Pemilihan sumber + sharing stream | `dashboard.py` (`ScreenStreamManager`) |
 | Injeksi jeda | `dashboard.py` (`DashboardState._action_params`) |
 | Blok `tuning` di status | `dashboard.py` (`DashboardState.status`) |

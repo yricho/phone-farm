@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import hmac
+import io
 import itertools
 import json
 import logging
@@ -26,10 +27,12 @@ import os
 import queue
 import re
 import socket
+import struct
 import subprocess
 import sys
 import threading
 import time
+import urllib.request
 from collections import deque
 from dataclasses import asdict, is_dataclass
 from datetime import datetime
@@ -50,7 +53,12 @@ from typing import (
     Tuple,
     Union,
 )
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
+
+try:  # Optional: re-encode live screen frames as small JPEGs.
+    from PIL import Image as _PILImage
+except ImportError:  # pragma: no cover - depends on the environment
+    _PILImage = None
 
 try:  # Support both package and direct-script execution.
     from .console import configure_stdio
@@ -107,8 +115,19 @@ def _short_error(message: Optional[str], limit: int = CONNECT_ERROR_LIMIT) -> st
 #: Magic bytes every PNG frame starts with.
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
-#: Consecutive adb failures before a stream stops trying the local path.
+#: JPEG start/end-of-image markers (used to split upstream MJPEG streams).
+JPEG_SOI = b"\xff\xd8"
+JPEG_EOI = b"\xff\xd9"
+
+#: Consecutive adb failures before a stream pauses the local path.
 ADB_MAX_FAILURES = 3
+#: Seconds before a paused adb path (or a failed adb probe) is tried again.
+ADB_RETRY_SECONDS = 30.0
+
+#: Live screen frames are downscaled to this width (0 = keep device size).
+DEFAULT_STREAM_MAX_WIDTH = 720
+#: JPEG quality of the live screen frames (needs Pillow).
+DEFAULT_STREAM_QUALITY = 70
 
 #: Android keycode for the hardware mute toggle (fallback for remote devices).
 KEYCODE_VOLUME_MUTE = 164
@@ -303,34 +322,169 @@ def close_apps(driver: Any, packages: Sequence[str]) -> Dict[str, Any]:
     return {"closed": closed, "skipped": skipped, "failed": failed}
 
 
+class RawFrame:
+    """Uncompressed ``adb exec-out screencap`` frame (pixels + layout)."""
+
+    __slots__ = ("width", "height", "rawmode", "data", "offset")
+
+    def __init__(
+        self, width: int, height: int, rawmode: str, data: bytes, offset: int
+    ) -> None:
+        self.width = width
+        self.height = height
+        self.rawmode = rawmode
+        self.data = data
+        self.offset = offset
+
+    #: ``screencap`` pixel format id -> Pillow raw mode decoded into ``RGB``.
+    RAWMODES = {1: "RGBX", 2: "RGBX", 5: "BGRX"}
+
+    @classmethod
+    def parse(cls, data: bytes) -> Optional["RawFrame"]:
+        """Parse ``screencap`` output; ``None`` when the layout is unknown.
+
+        The header is ``width, height, format`` (12 bytes) and newer Android
+        versions append a colour-space word (16 bytes). The header size is
+        derived from the payload length, so both layouts are accepted.
+        """
+        if len(data) < 12:
+            return None
+        width, height, pixel_format = struct.unpack_from("<III", data, 0)
+        if not (0 < width <= 10000 and 0 < height <= 10000):
+            return None
+        header = len(data) - width * height * 4
+        rawmode = cls.RAWMODES.get(pixel_format)
+        if header not in (12, 16) or rawmode is None:
+            return None
+        return cls(width, height, rawmode, data, header)
+
+
+#: A frame produced by a frame source: PNG/JPEG bytes or raw pixels.
+FrameData = Union[bytes, RawFrame]
+
+
+class FrameEncoder:
+    """Shrink device frames into small JPEGs for the browser.
+
+    A full-resolution PNG is 1-3 MB, while the live panel shows the screen at
+    roughly 300-400 CSS pixels wide. Downscaling and re-encoding as JPEG cuts
+    every frame to a few dozen KB, which is what makes the stream feel live
+    (and keeps the browser from decoding megabyte PNGs several times a second).
+
+    Pillow is optional: without it frames pass through untouched as PNG.
+    """
+
+    def __init__(
+        self,
+        max_width: int = DEFAULT_STREAM_MAX_WIDTH,
+        quality: int = DEFAULT_STREAM_QUALITY,
+    ) -> None:
+        self.max_width = max(0, int(max_width))
+        self.quality = min(95, max(10, int(quality)))
+
+    @property
+    def enabled(self) -> bool:
+        """``True`` when Pillow is installed and frames are re-encoded."""
+        return _PILImage is not None
+
+    def encode(self, frame: FrameData) -> Tuple[bytes, str]:
+        """Return ``(payload, content_type)`` for one frame."""
+        if isinstance(frame, (bytes, bytearray)) and frame.startswith(JPEG_SOI):
+            # Upstream MJPEG frames are already compressed and scaled
+            return bytes(frame), "image/jpeg"
+        if _PILImage is None:
+            if isinstance(frame, RawFrame):
+                raise ValueError("raw frames need Pillow")
+            return bytes(frame), "image/png"
+        try:
+            image = self._open(frame)
+            if self.max_width and image.width > self.max_width:
+                height = max(1, round(image.height * self.max_width / image.width))
+                image = image.resize(
+                    (self.max_width, height), _PILImage.Resampling.BILINEAR
+                )
+            output = io.BytesIO()
+            image.save(output, "JPEG", quality=self.quality)
+            return output.getvalue(), "image/jpeg"
+        except Exception:
+            if isinstance(frame, RawFrame):
+                raise
+            # Unreadable/odd PNG: still show it rather than dropping the frame
+            return bytes(frame), "image/png"
+
+    @staticmethod
+    def _open(frame: FrameData) -> Any:
+        if isinstance(frame, RawFrame):
+            pixels = memoryview(frame.data)[
+                frame.offset : frame.offset + frame.width * frame.height * 4
+            ]
+            return _PILImage.frombuffer(
+                "RGB", (frame.width, frame.height), pixels, "raw", frame.rawmode, 0, 1
+            )
+        image = _PILImage.open(io.BytesIO(frame))
+        return image if image.mode == "RGB" else image.convert("RGB")
+
+
 class AdbFrameGrabber:
-    """Grab live frames with ``adb exec-out screencap -p``.
+    """Grab live frames with ``adb exec-out screencap``.
 
     Appium screenshots go through the UiAutomator2 server, so every frame costs
     a full hierarchy round-trip *and* competes with the automation commands.
     For devices attached to the dashboard host (USB phones, emulators) adb
     screencap is several times faster and completely out of Appium's way.
 
-    Devices that are not attached locally - e.g. GADS remote devices - are
-    detected once and permanently fall back to Appium screenshots.
+    Two capture formats exist: ``screencap -p`` makes the *phone* compress a
+    full-resolution PNG (hundreds of ms of phone CPU), while plain
+    ``screencap`` ships raw pixels (no encoding, but ~4 bytes per pixel over
+    USB). Which one is faster depends on the device and the link, so when
+    Pillow can decode raw frames the grabber times one capture of each and
+    keeps the faster format.
+
+    Devices that are not attached locally - e.g. GADS remote devices - fail the
+    probe and fall back to the next frame source. Failures are not permanent:
+    the probe is retried every :data:`ADB_RETRY_SECONDS`.
     """
 
     def __init__(
-        self, udid: str, *, adb: str = "adb", timeout: float = 5.0
+        self,
+        udid: str,
+        *,
+        adb: str = "adb",
+        timeout: float = 5.0,
+        raw: Optional[bool] = None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.udid = udid
         self._adb = adb
         self._timeout = max(0.5, float(timeout))
+        self._clock = clock
         self._available: Optional[bool] = None
+        self._retry_at = 0.0
         self._failures = 0
+        self._lock = threading.Lock()
+        # None = not decided yet (benchmark), True/False = forced/decided
+        self._raw: Optional[bool] = raw if _PILImage is not None else False
+        self._timings: Dict[bool, float] = {}
 
     @property
     def available(self) -> bool:
         """``True`` when adb reports the device as locally attached."""
+        with self._lock:
+            if self._available is False and self._clock() >= self._retry_at:
+                self._available = None  # retry a transient failure
+            if self._available is None:
+                self._available = self._probe()
+                self._failures = 0
+                if not self._available:
+                    self._retry_at = self._clock() + ADB_RETRY_SECONDS
+            return self._available
 
-        if self._available is None:
-            self._available = self._probe()
-        return self._available
+    @property
+    def capture_format(self) -> str:
+        """``raw``, ``png`` or ``auto`` (benchmark still running)."""
+        if self._raw is None:
+            return "auto"
+        return "raw" if self._raw else "png"
 
     def _probe(self) -> bool:
         try:
@@ -347,34 +501,199 @@ class AdbFrameGrabber:
             return False
         return result.returncode == 0 and "device" in (result.stdout or "").strip()
 
-    def capture(self) -> Optional[bytes]:
-        """Return one PNG frame, or ``None`` when adb cannot provide it."""
-
+    def capture(self) -> Optional[FrameData]:
+        """Return one frame (PNG bytes or :class:`RawFrame`), else ``None``."""
         if not self.available:
             return None
+        use_raw = self._next_format()
+        started = self._clock()
+        output = self._screencap(raw=use_raw)
+        if output is None:
+            return self._failed()
+        if use_raw:
+            frame: Optional[FrameData] = RawFrame.parse(output)
+            if frame is None:
+                # Unknown pixel layout: stick to PNG for this device
+                self._raw = False
+                return self._failed()
+        elif output.startswith(PNG_SIGNATURE):
+            frame = output
+        else:
+            return self._failed()
+        self._record_timing(use_raw, self._clock() - started)
+        self._failures = 0
+        return frame
+
+    def capture_png(self) -> Optional[bytes]:
+        """Return one full-resolution PNG (snapshots), else ``None``."""
+        if not self.available:
+            return None
+        output = self._screencap(raw=False)
+        if output is None or not output.startswith(PNG_SIGNATURE):
+            return None
+        return output
+
+    def _next_format(self) -> bool:
+        if self._raw is not None:
+            return self._raw
+        # Benchmark: one raw capture, then one PNG capture
+        return True not in self._timings
+
+    def _record_timing(self, raw: bool, elapsed: float) -> None:
+        if self._raw is not None:
+            return
+        self._timings[raw] = elapsed
+        if len(self._timings) == 2:
+            self._raw = self._timings[True] < self._timings[False]
+            logging.getLogger(LOGGER_NAME).info(
+                "Live screen %s uses adb %s frames (raw %.0f ms, png %.0f ms)",
+                self.udid,
+                "raw" if self._raw else "png",
+                self._timings[True] * 1000,
+                self._timings[False] * 1000,
+            )
+
+    def _screencap(self, *, raw: bool) -> Optional[bytes]:
+        command = [self._adb, "-s", self.udid, "exec-out", "screencap"]
+        if not raw:
+            command.append("-p")
         try:
             result = subprocess.run(
-                [self._adb, "-s", self.udid, "exec-out", "screencap", "-p"],
+                command,
                 capture_output=True,
                 timeout=self._timeout,
                 check=False,
             )
         except (OSError, subprocess.SubprocessError):
-            return self._failed()
+            return None
         if result.returncode != 0:
-            return self._failed()
-        frame = result.stdout or b""
-        if not frame.startswith(PNG_SIGNATURE):
-            return self._failed()
-        self._failures = 0
-        return frame
+            return None
+        return result.stdout or b""
 
-    def _failed(self) -> Optional[bytes]:
-        """Disable the adb path after repeated failures and fall back."""
+    def _failed(self) -> None:
+        """Pause the adb path after repeated failures (retried later)."""
         self._failures += 1
         if self._failures >= ADB_MAX_FAILURES:
-            self._available = False
+            with self._lock:
+                self._available = False
+                self._retry_at = self._clock() + ADB_RETRY_SECONDS
         return None
+
+
+class MjpegFrameSource:
+    """Follow an upstream MJPEG stream and expose its latest JPEG frame.
+
+    Meant for devices that are not attached to the dashboard host, e.g. the
+    GADS provider endpoint ``/device/<udid>/android-stream-mjpeg``. Those
+    frames are produced on the phone by a screen-capture service, so they do
+    not touch UiAutomator2 at all and arrive far faster than Appium
+    screenshots.
+
+    The reader runs on its own daemon thread (started lazily on the first
+    :meth:`capture`) and reconnects with a back-off. Frames are split on the
+    JPEG start/end markers, so upstreams that omit ``Content-Length`` (GADS)
+    work as well.
+    """
+
+    #: Drop a half-received frame once the buffer grows beyond this size.
+    MAX_BUFFER = 8 * 1024 * 1024
+
+    def __init__(
+        self,
+        url: str,
+        *,
+        headers: Optional[Mapping[str, str]] = None,
+        stale_after: float = 5.0,
+        opener: Optional[Callable[..., Any]] = None,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.url = url
+        self._headers = dict(headers or {})
+        self._stale_after = float(stale_after)
+        self._opener = opener or urllib.request.urlopen
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._frame: Optional[bytes] = None
+        self._frame_at = 0.0
+        self._closed = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self._response: Any = None
+
+    def capture(self) -> Optional[bytes]:
+        """Return the latest fresh frame, or ``None`` while none is available.
+
+        The same ``bytes`` object is returned until a new frame arrives, so the
+        caller can skip duplicates with an identity check.
+        """
+        self._ensure_started()
+        with self._lock:
+            if self._frame is None:
+                return None
+            if self._clock() - self._frame_at > self._stale_after:
+                return None
+            return self._frame
+
+    def close(self) -> None:
+        self._closed.set()
+        response = self._response
+        if response is not None:
+            try:
+                response.close()
+            except Exception:
+                pass
+
+    def _ensure_started(self) -> None:
+        if self._thread is not None or self._closed.is_set():
+            return
+        self._thread = threading.Thread(
+            target=self._run, name="mjpeg-upstream", daemon=True
+        )
+        self._thread.start()
+
+    def _run(self) -> None:
+        backoff = 1.0
+        while not self._closed.is_set():
+            try:
+                request = urllib.request.Request(self.url, headers=self._headers)
+                with self._opener(request, timeout=10) as response:
+                    self._response = response
+                    backoff = 1.0
+                    self._read_frames(response)
+            except Exception as exc:  # network, auth, upstream restart
+                logging.getLogger(LOGGER_NAME).debug(
+                    "MJPEG upstream %s failed: %s", self.url, exc
+                )
+            finally:
+                self._response = None
+            if self._closed.wait(backoff):
+                return
+            backoff = min(10.0, backoff * 2)
+
+    def _read_frames(self, response: Any) -> None:
+        read = getattr(response, "read1", None) or response.read
+        buffer = bytearray()
+        while not self._closed.is_set():
+            chunk = read(65536)
+            if not chunk:
+                return
+            buffer += chunk
+            while True:
+                start = buffer.find(JPEG_SOI)
+                if start < 0:
+                    del buffer[:-1]  # keep a possibly split marker byte
+                    break
+                end = buffer.find(JPEG_EOI, start + 2)
+                if end < 0:
+                    if start:
+                        del buffer[:start]
+                    if len(buffer) > self.MAX_BUFFER:
+                        buffer.clear()
+                    break
+                frame = bytes(buffer[start : end + 2])
+                del buffer[: end + 2]
+                with self._lock:
+                    self._frame = frame
+                    self._frame_at = self._clock()
 
 
 LOGIN_PAGE = """<!doctype html>
@@ -549,25 +868,47 @@ class DashboardLogHandler(logging.Handler):
 
 
 class DeviceStream:
-    """One shared screenshot loop feeding any number of MJPEG subscribers."""
+    """One shared capture loop feeding any number of MJPEG subscribers.
+
+    Frames come from the first frame source that delivers one (adb, then an
+    upstream MJPEG stream), falling back to an Appium screenshot. Each frame is
+    re-encoded once by :class:`FrameEncoder` and shared by every viewer.
+    """
+
+    #: Poll period while following an upstream MJPEG stream (frames are pushed).
+    MJPEG_POLL = 0.05
+    #: Interval used when no viewer/CLI value is set: fast local paths vs Appium.
+    AUTO_FAST_INTERVAL = 0.3
+    AUTO_APPIUM_INTERVAL = 1.0
 
     def __init__(
         self,
         udid: str,
         get_driver: Callable[[], Any],
-        interval: float = 1.0,
-        frame_source: Optional[Callable[[], Optional[bytes]]] = None,
+        interval: Optional[float] = None,
+        sources: Sequence[Tuple[str, Any]] = (),
+        encoder: Optional[FrameEncoder] = None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.udid = udid
         self._get_driver = get_driver
-        self._interval = max(0.05, float(interval))
-        self._frame_source = frame_source
+        self._base_interval = (
+            None if interval is None else max(0.05, float(interval))
+        )
+        self._sources = list(sources)
+        self._encoder = encoder or FrameEncoder()
+        self._clock = clock
         self._condition = threading.Condition()
         self._subscribers = 0
-        self._frame: Optional[bytes] = None
+        self._viewer_intervals: Dict[float, int] = {}
+        self._frame: Optional[Tuple[bytes, str]] = None
         self._frame_id = 0
         self._closed = False
         self._failures = 0
+        self._last_raw: Any = None
+        self.source: Optional[str] = None
+        self._fps = 0.0
+        self._last_frame_at: Optional[float] = None
         self._thread = threading.Thread(
             target=self._capture_loop, name=f"screen-{udid}", daemon=True
         )
@@ -577,13 +918,33 @@ class DeviceStream:
         with self._condition:
             return self._closed
 
-    def add_subscriber(self) -> None:
+    @property
+    def interval(self) -> float:
+        """Current capture interval: the fastest viewer wins."""
+        with self._condition:
+            if self._viewer_intervals:
+                return min(self._viewer_intervals)
+            if self._base_interval is not None:
+                return self._base_interval
+            if self.source in (None, "appium"):
+                return self.AUTO_APPIUM_INTERVAL
+            return self.AUTO_FAST_INTERVAL
+
+    def add_subscriber(self, interval: Optional[float] = None) -> None:
         with self._condition:
             self._subscribers += 1
+            if interval is not None:
+                self._viewer_intervals[interval] = (
+                    self._viewer_intervals.get(interval, 0) + 1
+                )
 
-    def remove_subscriber(self) -> None:
+    def remove_subscriber(self, interval: Optional[float] = None) -> None:
         with self._condition:
             self._subscribers = max(0, self._subscribers - 1)
+            if interval is not None and interval in self._viewer_intervals:
+                self._viewer_intervals[interval] -= 1
+                if self._viewer_intervals[interval] <= 0:
+                    del self._viewer_intervals[interval]
             if self._subscribers == 0:
                 self._closed = True
                 self._condition.notify_all()
@@ -591,8 +952,22 @@ class DeviceStream:
     def start(self) -> None:
         self._thread.start()
 
-    def frames(self) -> Iterable[bytes]:
-        """Yield PNG frames; returns when the stream is closed."""
+    def info(self) -> Dict[str, Any]:
+        """Live stats for the dashboard (source, fps, frame size)."""
+        interval = self.interval
+        with self._condition:
+            frame = self._frame
+            return {
+                "source": self.source,
+                "fps": round(self._fps, 1),
+                "interval": round(interval, 2),
+                "viewers": self._subscribers,
+                "content_type": frame[1] if frame else None,
+                "frame_bytes": len(frame[0]) if frame else 0,
+            }
+
+    def frame_items(self) -> Iterable[Tuple[bytes, str]]:
+        """Yield ``(payload, content_type)``; returns when the stream closes."""
         last = -1
         while True:
             with self._condition:
@@ -608,6 +983,11 @@ class DeviceStream:
             if frame is not None:
                 yield frame
 
+    def frames(self) -> Iterable[bytes]:
+        """Yield frame payloads only (see :meth:`frame_items`)."""
+        for payload, _content_type in self.frame_items():
+            yield payload
+
     def close(self) -> None:
         with self._condition:
             self._closed = True
@@ -617,40 +997,83 @@ class DeviceStream:
             and threading.current_thread() is not self._thread
         ):
             self._thread.join(timeout=1.0)
+        self._close_sources()
+
+    def _close_sources(self) -> None:
+        for _name, source in self._sources:
+            close = getattr(source, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
+
+    def _grab(self) -> Tuple[Optional[str], Any]:
+        for name, source in self._sources:
+            try:
+                frame = source.capture()
+            except Exception:  # a broken source must not kill the stream
+                logging.getLogger(LOGGER_NAME).debug(
+                    "%s frame source failed for %s", name, self.udid, exc_info=True
+                )
+                continue
+            if frame is not None:
+                return name, frame
+        # Remote devices, no local/upstream source, or every source failed
+        return "appium", self._get_driver().get_screenshot_as_png()
 
     def _capture_loop(self) -> None:
-        while True:
-            with self._condition:
-                if self._closed:
-                    return
-            started = time.monotonic()
-            frame: Optional[bytes] = None
-            try:
-                if self._frame_source is not None:
-                    # Local devices: adb screencap, no Appium round-trip
-                    frame = self._frame_source()
-                if frame is None:
-                    # Remote devices, adb unavailable or adb failed
-                    frame = self._get_driver().get_screenshot_as_png()
-            except Exception:  # device dropped or Appium is busy
-                self._failures += 1
-            else:
-                self._failures = 0
+        try:
+            while True:
+                with self._condition:
+                    if self._closed:
+                        return
+                started = self._clock()
+                name: Optional[str] = None
+                raw: Any = None
+                encoded: Optional[Tuple[bytes, str]] = None
+                try:
+                    name, raw = self._grab()
+                    # Upstream MJPEG hands back the same object until a new
+                    # frame arrives; skip those instead of re-sending them
+                    if raw is not None and not (
+                        name == "mjpeg" and raw is self._last_raw
+                    ):
+                        encoded = self._encoder.encode(raw)
+                except Exception:  # device dropped or Appium is busy
+                    self._failures += 1
+                else:
+                    self._failures = 0
 
-            with self._condition:
-                if self._closed:
-                    return
-                if frame:
-                    self._frame = frame
-                    self._frame_id += 1
-                    self._condition.notify_all()
-                elif self._failures >= 5:
-                    self._closed = True
-                    self._condition.notify_all()
-                    return
+                with self._condition:
+                    if self._closed:
+                        return
+                    if name is not None:
+                        self.source = name
+                    if encoded is not None:
+                        self._last_raw = raw
+                        self._frame = encoded
+                        self._frame_id += 1
+                        self._update_fps(started)
+                        self._condition.notify_all()
+                    elif self._failures >= 5:
+                        self._closed = True
+                        self._condition.notify_all()
+                        return
 
-            elapsed = time.monotonic() - started
-            time.sleep(max(0.05, self._interval - elapsed))
+                period = self.MJPEG_POLL if name == "mjpeg" else self.interval
+                elapsed = self._clock() - started
+                time.sleep(max(0.02, period - elapsed))
+        finally:
+            self._close_sources()
+
+    def _update_fps(self, now: float) -> None:
+        if self._last_frame_at is not None:
+            delta = now - self._last_frame_at
+            if delta > 0:
+                current = 1.0 / delta
+                self._fps = current if not self._fps else self._fps * 0.7 + current * 0.3
+        self._last_frame_at = now
 
 
 class ScreenStreamManager:
@@ -663,19 +1086,30 @@ class ScreenStreamManager:
         self,
         bot: Any,
         *,
-        default_interval: float = 1.0,
+        default_interval: Optional[float] = None,
         min_interval: float = 0.3,
         max_interval: float = 10.0,
         screen_source: str = "auto",
         adb: str = "adb",
+        max_width: int = DEFAULT_STREAM_MAX_WIDTH,
+        quality: int = DEFAULT_STREAM_QUALITY,
+        mjpeg_url: Optional[str] = None,
+        mjpeg_token: Optional[str] = None,
     ) -> None:
         self.bot = bot
-        self.default_interval = float(default_interval)
+        self.default_interval = (
+            None if default_interval is None else float(default_interval)
+        )
         self._min = float(min_interval)
         self._max = float(max_interval)
         self.screen_source = self._validate_source(screen_source)
         self._adb = adb
+        self.encoder = FrameEncoder(max_width, quality)
+        self.mjpeg_url = self._validate_mjpeg_url(mjpeg_url)
+        self._mjpeg_token = mjpeg_token or None
         self._streams: Dict[str, DeviceStream] = {}
+        self._grabbers: Dict[str, AdbFrameGrabber] = {}
+        self._grabbers_lock = threading.Lock()
         self._lock = threading.Lock()
 
     @classmethod
@@ -688,53 +1122,120 @@ class ScreenStreamManager:
             )
         return value
 
+    @staticmethod
+    def _validate_mjpeg_url(url: Optional[str]) -> Optional[str]:
+        value = (url or "").strip()
+        if not value:
+            return None
+        if "{udid}" not in value:
+            raise ValueError("mjpeg_url must contain the {udid} placeholder")
+        if urlparse(value.replace("{udid}", "x")).scheme not in {"http", "https"}:
+            raise ValueError("mjpeg_url must be an http(s) URL")
+        return value
+
     @property
     def adb(self) -> str:
         """Path to the adb executable used for local device helpers."""
 
         return self._adb
 
-    def clamp_interval(self, interval: Any) -> float:
-        if interval is None:
+    def clamp_interval(self, interval: Any) -> Optional[float]:
+        if interval is None or interval == "":
             return self.default_interval
         try:
             value = float(interval)
         except (TypeError, ValueError):
             return self.default_interval
+        if value != value:  # NaN
+            return self.default_interval
         return max(self._min, min(self._max, value))
 
     def acquire(self, udid: str, interval: Any = None) -> DeviceStream:
-        interval_value = self.clamp_interval(interval)
+        """Join (or start) the shared stream of *udid*.
+
+        Pass the same *interval* to :meth:`release`. When viewers ask for
+        different intervals the fastest one is used.
+        """
+        viewer_interval = self._viewer_interval(interval)
         with self._lock:
             stream = self._streams.get(udid)
             if stream is None or stream.closed:
                 self.bot.get_driver(udid)  # raises when the device is offline
+                base = self.default_interval
                 stream = DeviceStream(
                     udid,
                     lambda: self.bot.get_driver(udid),
-                    interval_value,
-                    frame_source=self._frame_source_for(udid),
+                    None if base is None else self.clamp_interval(base),
+                    sources=self._frame_sources_for(udid),
+                    encoder=self.encoder,
                 )
-                stream.add_subscriber()
+                stream.add_subscriber(viewer_interval)
                 stream.start()
                 self._streams[udid] = stream
             else:
-                stream.add_subscriber()
+                stream.add_subscriber(viewer_interval)
             return stream
 
-    def _frame_source_for(
-        self, udid: str
-    ) -> Optional[Callable[[], Optional[bytes]]]:
-        """Return the adb frame grabber, or ``None`` to use Appium directly."""
-        if self.screen_source != "auto":
+    def _viewer_interval(self, interval: Any) -> Optional[float]:
+        """Clamp an explicit per-viewer interval; ``None`` keeps the default."""
+        if interval is None or interval == "":
             return None
-        # The probe runs lazily inside the stream thread, so opening a live view
-        # never blocks on adb (remote GADS devices are not attached locally).
-        return AdbFrameGrabber(udid, adb=self._adb).capture
+        try:
+            value = float(interval)
+        except (TypeError, ValueError):
+            return None
+        if value != value:
+            return None
+        return max(self._min, min(self._max, value))
 
-    def release(self, stream: DeviceStream) -> None:
+    def _grabber(self, udid: str) -> AdbFrameGrabber:
+        # Own lock: acquire() calls this while holding self._lock
+        with self._grabbers_lock:
+            grabber = self._grabbers.get(udid)
+            if grabber is None:
+                grabber = AdbFrameGrabber(udid, adb=self._adb)
+                self._grabbers[udid] = grabber
+            return grabber
+
+    def _frame_sources_for(self, udid: str) -> List[Tuple[str, Any]]:
+        """Ordered frame sources tried before falling back to Appium."""
+        if self.screen_source != "auto":
+            return []
+        # The adb probe runs lazily inside the stream thread, so opening a live
+        # view never blocks on adb (remote GADS devices are not attached).
+        sources: List[Tuple[str, Any]] = [("adb", self._grabber(udid))]
+        if self.mjpeg_url:
+            headers = {}
+            if self._mjpeg_token:
+                headers["Authorization"] = f"Bearer {self._mjpeg_token}"
+            url = self.mjpeg_url.replace("{udid}", quote(udid, safe=""))
+            sources.append(("mjpeg", MjpegFrameSource(url, headers=headers)))
+        return sources
+
+    def snapshot(self, udid: str) -> bytes:
+        """Full-resolution PNG of *udid*: adb when attached, else Appium.
+
+        Raises:
+            DeviceNotConnectedError: If the device has no Appium session.
+        """
+        driver = self.bot.get_driver(udid)
+        if self.screen_source == "auto":
+            frame = self._grabber(udid).capture_png()
+            if frame is not None:
+                return frame
+        return driver.get_screenshot_as_png()
+
+    def stream_info(self, udid: str) -> Optional[Dict[str, Any]]:
         with self._lock:
-            stream.remove_subscriber()
+            stream = self._streams.get(udid)
+        if stream is None or stream.closed:
+            return None
+        return stream.info()
+
+    def release(self, stream: DeviceStream, interval: Any = None) -> None:
+        viewer_interval = self._viewer_interval(interval)
+        with self._lock:
+            stream.remove_subscriber(viewer_interval)
             if stream.closed and self._streams.get(stream.udid) is stream:
                 self._streams.pop(stream.udid, None)
 
@@ -775,12 +1276,16 @@ class DashboardState:
         actions: Optional[Dict[str, Callable[..., Any]]] = None,
         max_jobs: int = MAX_JOBS,
         max_logs: int = MAX_LOGS,
-        stream_interval: float = 1.0,
+        stream_interval: Optional[float] = None,
         manifest_path: Optional[Union[str, Path]] = None,
         bot_factory: Optional[Callable[[str], Any]] = None,
         action_delay_range: Optional[Sequence[float]] = None,
         screen_source: str = "auto",
         adb: str = "adb",
+        stream_max_width: int = DEFAULT_STREAM_MAX_WIDTH,
+        stream_quality: int = DEFAULT_STREAM_QUALITY,
+        mjpeg_url: Optional[str] = None,
+        mjpeg_token: Optional[str] = None,
     ) -> None:
         self.bot = bot
         self.rack = rack
@@ -821,6 +1326,10 @@ class DashboardState:
             default_interval=stream_interval,
             screen_source=screen_source,
             adb=adb,
+            max_width=stream_max_width,
+            quality=stream_quality,
+            mjpeg_url=mjpeg_url,
+            mjpeg_token=mjpeg_token,
         )
 
         self._lock = threading.RLock()
@@ -2174,6 +2683,7 @@ class DashboardState:
                     "session_id": connection.session_id if connection else None,
                     "server_url": connection.server_url if connection else None,
                     "muted": muted_states.get(spec.udid, False),
+                    "stream": self.screen_streams.stream_info(spec.udid),
                 }
             )
 
@@ -2243,6 +2753,11 @@ class DashboardState:
                     else None
                 ),
                 "screen_source": self.screen_streams.screen_source,
+                "stream_interval": self.screen_streams.default_interval,
+                "stream_max_width": self.screen_streams.encoder.max_width,
+                "stream_quality": self.screen_streams.encoder.quality,
+                "stream_jpeg": self.screen_streams.encoder.enabled,
+                "stream_mjpeg": bool(self.screen_streams.mjpeg_url),
             },
             "devices": devices,
             "jobs": jobs,
@@ -2901,30 +3416,29 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-store")
             self.send_header("Connection", "close")
             self.end_headers()
-            for frame in stream.frames():
-                self.wfile.write(b"--frame\r\n")
-                self.wfile.write(b"Content-Type: image/png\r\n")
+            for frame, content_type in stream.frame_items():
+                # One write per part: fewer syscalls and no half-sent headers
                 self.wfile.write(
-                    f"Content-Length: {len(frame)}\r\n\r\n".encode("ascii")
+                    b"--frame\r\nContent-Type: "
+                    + content_type.encode("ascii")
+                    + f"\r\nContent-Length: {len(frame)}\r\n\r\n".encode("ascii")
+                    + frame
+                    + b"\r\n"
                 )
-                self.wfile.write(frame)
-                self.wfile.write(b"\r\n")
                 self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass
         finally:
-            self.server.state.screen_streams.release(stream)
+            self.server.state.screen_streams.release(stream, interval)
 
     def _serve_screenshot(self, udid: str) -> None:
         try:
-            driver = self.server.state.bot.get_driver(udid)
+            frame = self.server.state.screen_streams.snapshot(udid)
         except DeviceNotConnectedError:
             self._send_json(
                 {"error": "device is not connected"}, HTTPStatus.CONFLICT
             )
             return
-        try:
-            frame = driver.get_screenshot_as_png()
         except Exception:
             logging.getLogger(LOGGER_NAME).warning(
                 "Screenshot failed for %s", udid, exc_info=True
@@ -3222,11 +3736,46 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--stream-interval",
         type=float,
-        default=1.0,
+        default=None,
         help=(
-            "Screenshot interval (seconds) for live screen streams. Lower is "
-            "smoother; 0.3 is the floor. Local devices stream through adb and "
-            "handle shorter intervals better than Appium"
+            "Screenshot interval (seconds) for live screen streams; 0.3 is the "
+            "floor. Default: 0.3 for adb/MJPEG frames and 1.0 for Appium "
+            "screenshots (which compete with the automation commands)"
+        ),
+    )
+    parser.add_argument(
+        "--stream-max-width",
+        type=int,
+        default=DEFAULT_STREAM_MAX_WIDTH,
+        help=(
+            "Downscale live screen frames to this width in pixels; 0 keeps the "
+            f"device resolution (default: {DEFAULT_STREAM_MAX_WIDTH}, needs Pillow)"
+        ),
+    )
+    parser.add_argument(
+        "--stream-quality",
+        type=int,
+        default=DEFAULT_STREAM_QUALITY,
+        help=(
+            "JPEG quality 10-95 of live screen frames "
+            f"(default: {DEFAULT_STREAM_QUALITY}, needs Pillow)"
+        ),
+    )
+    parser.add_argument(
+        "--mjpeg-url",
+        default=os.environ.get("GADS_MJPEG_URL"),
+        help=(
+            "Upstream MJPEG URL template for devices not attached to this host, "
+            "e.g. http://provider:10001/device/{udid}/android-stream-mjpeg "
+            "(default: $GADS_MJPEG_URL)"
+        ),
+    )
+    parser.add_argument(
+        "--mjpeg-token",
+        default=os.environ.get("GADS_MJPEG_TOKEN"),
+        help=(
+            "Bearer token sent to --mjpeg-url, e.g. for a GADS hub with auth "
+            "(default: $GADS_MJPEG_TOKEN)"
         ),
     )
     parser.add_argument(
@@ -3331,9 +3880,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 2
     try:
         action_delay = _action_delay_from_args(args)
+        ScreenStreamManager._validate_mjpeg_url(args.mjpeg_url)
     except ValueError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
+    if _PILImage is None:
+        print(
+            "Catatan: Pillow belum terpasang; live screen dikirim sebagai PNG "
+            "penuh (lebih lambat). Jalankan: pip install -r requirements.txt"
+        )
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s - %(message)s",
@@ -3378,6 +3933,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         action_delay_range=action_delay,
         screen_source=args.screen_source,
         adb=args.adb,
+        stream_max_width=args.stream_max_width,
+        stream_quality=args.stream_quality,
+        mjpeg_url=args.mjpeg_url,
+        mjpeg_token=args.mjpeg_token,
     )
 
     try:

@@ -741,10 +741,11 @@ menampilkan `<img src="...">` tanpa library tambahan. Satu HP hanya punya **satu
 capture loop** untuk panel live, dan loop otomatis berhenti saat tombol **Stop**
 ditekan atau device gagal 5× berturut-turut.
 
-Catatan performa: screenshot Appium tidak gratis. Hanya device yang sedang
-dipilih yang di-stream; tekan **Stop** saat tidak dipantau, atau naikkan
-interval lewat `--stream-interval` (default 1 detik, query stream di-clamp
-0.3–10 detik).
+Catatan performa: hanya device yang sedang dipilih yang di-stream. Interval
+default otomatis (0.3 detik untuk frame adb/MJPEG, 1 detik untuk screenshot
+Appium) dan bisa diatur lewat `--stream-interval` (clamp 0.3–10 detik). Frame
+dikecilkan ke lebar 720 px dan dikirim sebagai JPEG bila Pillow terpasang.
+Baris **Stream** di panel menampilkan sumber frame dan fps.
 
 ### Live screen interaktif
 
@@ -974,18 +975,26 @@ tuas berikut (semuanya opsional, default tetap aman).
 ### 1. Live screen: `adb` alih-alih Appium (default `auto`)
 
 ```bash
-python3 dashboard.py --manifest rack-01.json --screen-source auto --stream-interval 0.3
+pip install -r requirements.txt   # Pillow: frame JPEG kecil, bukan PNG penuh
+python3 dashboard.py --manifest rack-01.json
 ```
 
-- `auto` (default) memakai `adb -s <udid> exec-out screencap -p` untuk HP/emulator
-  yang menempel di host dashboard, lalu **jatuh otomatis ke Appium** untuk device
-  remote (mis. device GADS). Tidak ada konfigurasi tambahan.
+- `auto` (default) memakai `adb -s <udid> exec-out screencap` untuk HP/emulator
+  yang menempel di host dashboard (format raw/PNG dipilih otomatis mana yang
+  lebih cepat), lalu **jatuh otomatis ke Appium** untuk device remote. Jalur
+  adb yang sempat gagal dicoba lagi tiap 30 detik.
+- Frame dikecilkan (`--stream-max-width`, default 720) dan di-encode JPEG
+  (`--stream-quality`, default 70): ~80 KB per frame, bukan PNG 0,5–3 MB.
+- Device GADS remote: isi `--mjpeg-url
+  "http://<provider>:<port>/device/{udid}/android-stream-mjpeg"` (opsional
+  `--mjpeg-token` untuk hub dengan auth) supaya frame diambil dari stream GADS,
+  bukan screenshot Appium.
 - Keuntungannya bukan hanya fps lebih tinggi: screenshot Appium memakai server
   UiAutomator2 yang sama dengan aksi, jadi polling live screen ikut memperlambat
   posting/comment. Jalur adb sepenuhnya di luar itu.
 - `--screen-source appium` memaksa perilaku lama (semua frame lewat Appium).
-- `--stream-interval` minimum `0.3` detik. Untuk local device, `0.2–0.3` sudah
-  cukup halus.
+- `--stream-interval` minimum `0.3` detik. Tanpa flag, interval otomatis 0.3
+  detik untuk adb/MJPEG dan 1 detik untuk Appium.
 
 ### 2. Capability performa: `--fast-mode`
 
@@ -1030,8 +1039,8 @@ Nilai tuning yang aktif terlihat di `GET /api/status` pada blok `tuning`
 Untuk hasil paling enak dilihat: **pakai GADS untuk live view/manual control**
 (MJPEG/WebRTC di sisi device, jauh lebih halus), sementara SocialMediaBot tetap
 menjalankan aksi terjadwal + live screen seperlunya. Kalau ingin semuanya di
-dashboard, kombinasi `--screen-source auto --stream-interval 0.3 --fast-mode`
-memberi perbaikan paling terasa tanpa menyentuh GADS.
+dashboard, pasang Pillow, jalankan dengan `--fast-mode`, dan untuk device GADS
+isi `--mjpeg-url` agar live screen memakai stream MJPEG GADS.
 
 ## Catatan GADS
 
