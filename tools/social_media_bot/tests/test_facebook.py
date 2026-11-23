@@ -4,6 +4,7 @@ The fake driver mimics the subset of the Appium/UiAutomator2 API used by
 ``facebook.follow_user`` so the flow can be verified without a real phone.
 """
 
+import logging
 import os
 import re
 import sys
@@ -921,6 +922,119 @@ class CreatePostTests(unittest.TestCase):
         self.assertTrue(result.posted)
         self.assertEqual(home.clicked, 1)
         self.assertEqual(editor.text, "Halo home")
+
+    def _composer_parts(self):
+        prompt = FakeElement(
+            text="Apa yang Anda pikirkan?",
+            displayed=False,
+            element_id="prompt-node",
+        )
+        editor = FakeElement(
+            class_name="android.widget.EditText", element_id="editor-node"
+        )
+        button = FakeElement(
+            text="Posting",
+            content_desc="Posting",
+            class_name="android.widget.Button",
+            element_id="post-button",
+        )
+        return prompt, editor, button
+
+    def test_create_post_taps_the_top_home_tab_to_reach_the_composer(self):
+        # Newer phone layouts put the tab bar under the header
+        prompt, editor, button = self._composer_parts()
+        events = []
+
+        class HomeTab(FakeElement):
+            def click(self):
+                super().click()
+                events.append("home")
+                prompt.displayed = True
+
+        home = HomeTab(
+            content_desc="Beranda, tab 2 dari 6",
+            class_name="android.view.ViewGroup",
+            element_id="home-tab",
+        )
+        home.location = {"x": 220, "y": 300}
+        home.size = {"width": 160, "height": 130}
+
+        class Recording(FakeDriver):
+            def swipe(self, *args):
+                super().swipe(*args)
+                events.append("swipe")
+
+        driver = Recording([home, prompt, editor, button])
+
+        with mock.patch.object(facebook, "COMPOSER_FIRST_WAIT", 0.02):
+            result = create_post(driver, "Halo atas", timeout=0.5)
+
+        self.assertTrue(result.posted)
+        self.assertEqual(home.clicked, 1)
+        # One swipe reveals the hidden header first, then Home is tapped and
+        # no further swipes happen because the composer is visible.
+        self.assertEqual(events, ["swipe", "home"])
+        self.assertEqual(editor.text, "Halo atas")
+
+    def test_feed_card_mentioning_home_is_not_tapped(self):
+        card = FakeElement(
+            text="Beranda baru kami sudah buka!",
+            element_id="feed-card",
+        )
+        card.location = {"x": 0, "y": 200}
+        card.size = {"width": 1080, "height": 600}
+        driver = FakeDriver([card])
+
+        self.assertFalse(facebook._tap_home_tab(driver, logging.getLogger("test")))
+        self.assertEqual(card.clicked, 0)
+
+    def test_scroll_to_top_stops_once_the_target_is_visible(self):
+        seen = {"swipes": 0}
+
+        class Counting(FakeDriver):
+            def swipe(self, *args):
+                super().swipe(*args)
+                seen["swipes"] += 1
+
+        driver = Counting([])
+        facebook._scroll_to_top(
+            driver, logging.getLogger("test"), swipes=8, until=lambda _d: seen["swipes"] >= 3
+        )
+        self.assertEqual(len(driver.swipes), 3)
+
+        driver = Counting([])
+        seen["swipes"] = 0
+        facebook._scroll_to_top(driver, logging.getLogger("test"), swipes=8)
+        self.assertEqual(len(driver.swipes), 8)
+
+    def test_create_post_scrolls_the_composer_into_view_on_device(self):
+        prompt, editor, button = self._composer_parts()
+
+        class UiScrollableDriver(FakeDriver):
+            def swipe(self, *args):
+                super().swipe(*args)  # swipes alone never reach the top
+
+            def find_elements(self, by, value):
+                if "UiScrollable" in value:
+                    self.scripts.append(("uiscrollable", value))
+                    prompt.displayed = True
+                    return [prompt]
+                return super().find_elements(by, value)
+
+        driver = UiScrollableDriver([prompt, editor, button])
+
+        with mock.patch.object(facebook, "COMPOSER_FIRST_WAIT", 0.02):
+            result = create_post(driver, "Halo jauh", timeout=0.5)
+
+        self.assertTrue(result.posted)
+        self.assertEqual(editor.text, "Halo jauh")
+        searches = [args for name, args in driver.scripts if name == "uiscrollable"]
+        self.assertEqual(len(searches), 1)
+        self.assertIn("scrollIntoView", searches[0])
+        self.assertIn("Apa yang Anda pikirkan", searches[0])
+        self.assertNotIn("\\", searches[0])
+        # The deep-link recovery was not needed
+        self.assertNotIn("mobile: deepLink", [name for name, _ in driver.scripts])
 
     def test_create_post_scrolls_the_feed_when_the_composer_is_off_screen(self):
         prompt = FakeElement(

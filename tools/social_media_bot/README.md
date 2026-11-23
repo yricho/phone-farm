@@ -477,10 +477,15 @@ Alur yang dijalankan:
    `Bagikan sesuatu` / `Tulis sesuatu` / `Buat postingan` / `Create post`.
    Kalau layar composer dari percobaan sebelumnya masih terbuka, field-nya
    langsung dipakai. Kalau pill tidak terlihat (feed sering mengingat posisi
-   scroll), bot **tap tab Home** di navigasi bawah (Facebook otomatis scroll ke
-   paling atas) lalu swipe beberapa kali; kalau masih tidak ada, bot membuka
-   **`fb://feed`**, menutup popup “Nanti”/“Not now”, dan scroll lagi sebelum
-   menyerah — jadi layar sisa run sebelumnya tidak langsung jadi timeout.
+   scroll), bot swipe sekali untuk memunculkan header yang tersembunyi, lalu
+   **tap tab Home/Beranda** (bar bawah, tab bar atas di layout baru, atau rail
+   kiri tablet; Facebook otomatis scroll ke paling atas) dan swipe sampai pill
+   terlihat. Kalau belum ketemu, UiAutomator di HP diminta men-scroll feed ke
+   awal dan mencari pill-nya sendiri (`UiScrollable.scrollIntoView`), yang
+   tetap berhasil walau feed sudah di-scroll jauh. Kalau masih tidak ada, bot
+   membuka **`fb://feed`**, menutup popup “Nanti”/“Not now”, dan scroll lagi
+   sebelum menyerah — jadi layar sisa run sebelumnya tidak langsung jadi
+   timeout.
 3. tunggu editor muncul (build baru membuka halaman terpisah
    **“Postingan baru” / “Buat postingan baru”**), lalu **tap field tersebut**
    agar fokus. Kalau editor belum muncul, composer di-tap ulang dan field yang
@@ -1173,7 +1178,7 @@ multiline, tombol Post hilang, validasi teks, delay acak, bounds pill/editor
 identik, layar composer sudah terbuka, tap composer diulang, label tombol
 terbungkus + tap koordinat, editor berbasis `View`, auto UI dump saat gagal,
 reuse layar composer sisa run, deep link `fb://feed` saat pill hilang, scroll
-feed ke atas lewat tab Home + swipe, dismiss popup, wake screen, retry sekali
+feed ke atas lewat tab Home (bawah/atas) + swipe + `UiScrollable`, dismiss popup, wake screen, retry sekali
 sebelum submit, tidak
 retry setelah tombol Post, konteks device di pesan error, tap `Selesai`/`Done`
 di layar teks), alur

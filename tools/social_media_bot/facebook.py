@@ -14,11 +14,12 @@ from __future__ import annotations
 import logging
 import os
 import random
+import re
 import tempfile
 import time
 import xml.etree.ElementTree as ElementTree
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from urllib.parse import urlsplit
 
 try:
@@ -989,9 +990,11 @@ def _open_post_composer_entry(
 
     Facebook remembers the feed scroll position, can be left on the
     composer/audience screen by a previous run, or show a popup. When the entry
-    is not visible the flow scrolls the feed to the very top first (the bottom
-    Home tab scrolls the feed up), then returns to the feed with a deep link,
-    dismisses common popups and scrolls again before giving up.
+    is not visible the flow scrolls the feed to the very top first (tapping the
+    Home tab - bottom bar, top tab bar or left rail - scrolls the feed up), then
+    asks UiAutomator to scroll the composer into view, then returns to the feed
+    with a deep link, dismisses common popups and scrolls again before giving
+    up.
     """
 
     composer = _wait_for_composer_entry(
@@ -1001,17 +1004,24 @@ def _open_post_composer_entry(
         return composer
 
     logger.info("Facebook: composer not visible; scrolling the feed to the top")
-    _scroll_to_top(driver, logger)
+    _scroll_to_top(driver, logger, until=_composer_visible)
     composer = _wait_for_composer_entry(
         driver, min(COMPOSER_FIRST_WAIT, timeout)
     )
     if composer is not None:
         return composer
 
+    # Let UiAutomator fling the feed to its beginning and search it on-device;
+    # this also works when the feed was scrolled far down.
+    logger.info("Facebook: composer still missing; scrolling it into view")
+    composer = _scroll_composer_into_view(driver, logger)
+    if composer is not None:
+        return composer
+
     logger.info("Facebook: composer still missing; returning to the feed")
     _return_to_feed(driver, package, low, high, logger)
     _dismiss_popups(driver, logger)
-    _scroll_to_top(driver, logger)
+    _scroll_to_top(driver, logger, until=_composer_visible)
     composer = _wait_for_composer_entry(driver, min(timeout, 10.0))
     if composer is not None:
         return composer
@@ -1109,8 +1119,32 @@ def _home_tab_locators() -> List[Locator]:
     return locators
 
 
+def _is_navigation_tab(element: Any, width: int, height: int) -> bool:
+    """True when *element* sits where Facebook puts its navigation tabs.
+
+    Accepted: the bottom bar (classic phones), the left rail (tablets) and the
+    top tab bar right under the header (newer phone layouts). Top-bar matches
+    must be icon-sized so a feed card that mentions "Home"/"Beranda" is never
+    tapped.
+    """
+
+    location = element.location
+    element_size = element.size
+    element_width = element_size["width"]
+    element_height = element_size["height"]
+    center_x = location["x"] + element_width / 2
+    center_y = location["y"] + element_height / 2
+    if center_y >= height * 0.7 or center_x <= width * 0.2:
+        return True
+    return (
+        center_y <= height * 0.3
+        and element_height <= height * 0.12
+        and element_width <= width * 0.3
+    )
+
+
 def _tap_home_tab(driver: Any, logger: logging.Logger) -> bool:
-    """Tap the bottom Home tab, which scrolls the feed back to the top."""
+    """Tap the Home tab, which scrolls the feed back to the top."""
 
     element = _find_displayed(driver, _home_tab_locators())
     if element is None:
@@ -1126,49 +1160,121 @@ def _tap_home_tab(driver: Any, logger: logging.Logger) -> bool:
             width = height = 0
         if width > 0 and height > 0:
             try:
-                location = element.location
-                element_size = element.size
-                center_x = location["x"] + element_size["width"] / 2
-                center_y = location["y"] + element_size["height"] / 2
-                # Only trust labels in the bottom navigation (phones) or the
-                # left rail (tablets), not feed cards that mention "Home".
-                if center_y < height * 0.7 and center_x > width * 0.2:
+                if not _is_navigation_tab(element, width, height):
                     return False
             except Exception:
                 pass
     return _tap_element(driver, element, logger)
 
 
-def _scroll_to_top(driver: Any, logger: logging.Logger, swipes: int = 4) -> None:
-    """Jump back to the top of the feed so the composer is on screen."""
+def _composer_visible(driver: Any) -> bool:
+    return _find_displayed(driver, _composer_prompt_locators()) is not None
 
+
+def _scroll_to_top(
+    driver: Any,
+    logger: logging.Logger,
+    swipes: int = 8,
+    until: Optional[Callable[[Any], bool]] = None,
+) -> None:
+    """Jump back to the top of the feed so the composer is on screen.
+
+    Facebook hides the header (and the top tab bar on newer layouts) while the
+    feed scrolls down, so one swipe reveals it before the Home tab is tapped.
+    The remaining swipes stop as soon as *until* reports the target visible.
+    """
+
+    swipe_down = _feed_swiper(driver, logger)
+    if swipe_down is not None and not swipe_down():
+        swipe_down = None
     if _tap_home_tab(driver, logger):
         time.sleep(POLL_INTERVAL)
+    if swipe_down is None:
+        return
+    for _ in range(max(0, swipes - 1)):
+        if until is not None and until(driver):
+            return
+        if not swipe_down():
+            return
+
+
+def _feed_swiper(
+    driver: Any, logger: logging.Logger
+) -> Optional[Callable[[], bool]]:
+    """Return a callable doing one top-to-bottom swipe, or ``None``."""
 
     get_size = getattr(driver, "get_window_size", None)
-    if not callable(get_size):
-        return
+    swipe = getattr(driver, "swipe", None)
+    if not callable(get_size) or not callable(swipe):
+        return None
     try:
         size = get_size()
         width = int(size.get("width", 0))
         height = int(size.get("height", 0))
     except Exception:
         logger.debug("Could not read the window size", exc_info=True)
-        return
+        return None
     if width <= 0 or height <= 0:
-        return
-    swipe = getattr(driver, "swipe", None)
-    if not callable(swipe):
-        return
+        return None
     center = width // 2
     start_y = max(1, int(height * 0.2))
     end_y = max(start_y + 1, int(height * 0.85))
-    for _ in range(max(0, swipes)):
+
+    def swipe_down() -> bool:
         try:
             swipe(center, start_y, center, end_y, 300)
         except Exception:
             logger.debug("Could not scroll the feed", exc_info=True)
-            return
+            return False
+        return True
+
+    return swipe_down
+
+
+def _composer_scroll_locators() -> List[Locator]:
+    """``UiScrollable.scrollIntoView`` selectors for the feed composer.
+
+    ``scrollIntoView`` first flings the scrollable to its beginning and then
+    scrolls forward until the child matches, all on the device - far cheaper
+    than one Appium round-trip per swipe.
+    """
+
+    # Escape regex metacharacters only: re.escape() would also escape spaces,
+    # and backslashes are fragile inside Appium's UiSelector string parser.
+    alternatives = "|".join(
+        re.sub(r"([.^$*+?()\[\]{}|\\])", r"\\\1", prompt)
+        for prompt in _COMPOSER_PROMPTS
+    )
+    pattern = "(?s).*(" + alternatives + ").*"
+    escaped = _escape_uiautomator(pattern)
+    scrollable = (
+        "new UiScrollable(new UiSelector().scrollable(true))"
+        ".setAsVerticalList().setMaxSearchSwipes(25)"
+    )
+    return [
+        (
+            BY_ANDROID_UIAUTOMATOR,
+            f'{scrollable}.scrollIntoView(new UiSelector().{attribute}("{escaped}"))',
+        )
+        for attribute in ("textMatches", "descriptionMatches")
+    ]
+
+
+def _scroll_composer_into_view(driver: Any, logger: logging.Logger) -> Any:
+    """Return the composer entry after an on-device scroll, else ``None``."""
+
+    for by, value in _composer_scroll_locators():
+        try:
+            driver.find_elements(by, value)
+        except Exception:  # no scrollable on screen, old UiAutomator, ...
+            logger.debug("UiScrollable search failed", exc_info=True)
+            continue
+        # Re-resolve with the regular locators: they check visibility and
+        # return the clickable composer rather than a nested label.
+        entry = _find_displayed(driver, _composer_prompt_locators())
+        if entry is not None:
+            return entry
+    return None
 
 
 def _active_editor(driver: Any, expected: Any = None) -> Any:
